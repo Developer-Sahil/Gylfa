@@ -1,0 +1,52 @@
+{
+  "summary": "Comprehensive backend (pytest) + frontend (Playwright) test of Gylfa MVP. Backend: 19/19 pytest cases PASSED including auth (register/login/logout/me/forgot+reset roundtrip), goals CRUD, checkin XP+streak+duplicate-400, circles create/join/detail with stats+leaderboard sort, achievements (8 items), notifications mark-read flows, and admin-only digest. [EMAIL-MOCK] log lines confirmed in /var/log/supervisor/backend.err.log. Demo password restored to demo123. Frontend: Landing (all 6 testids present, hero text + 4 stats render), Login (demo-creds button populates fields, redirects to /dashboard), Dashboard (Lv.8 Adept, Aria, 3 stat tiles, 4 quest toggles, bell badge=2, sidebar nav), Goals (daily/weekly tabs, create-modal opens & ESC-closes), Circles (Shadow Guild + SHADOW01 code visible, detail page shows members), Profile (recharts svg + 8 achievement tiles), Forgot-password (success toast + success card), Logout (returns to /login). Protected /dashboard correctly redirects to /login when token absent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "testid_spec_mismatches": [
+    {"spec": "demo-btn", "actual": "login-demo-btn"},
+    {"spec": "notifications-bell", "actual": "notifications-bell-btn"},
+    {"spec": "goals-new-btn", "actual": "goals-create-btn"},
+    {"spec": "user-card-logout / sidebar-logout", "actual": "logout-btn"},
+    {"spec": "login-submit", "actual": "login-submit-btn"}
+  ],
+  "spec_deviations_minor": [
+    "Spec says 'Logout returns to /'. Actual logout redirects to /login (functionally correct, just a different landing page).",
+    "Landing stat 'CIRCLES PACK COUNT' shows '2' for demo (one Shadow Guild + the TEST_ circle from prior test runs) — acceptable test artifact; idempotent seeding keeps Shadow Guild stable."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: align frontend data-testid names to those documented in the PRD/spec (demo-btn, notifications-bell, goals-new-btn, user-card-logout). Functional impact: none — UI works perfectly.",
+    "Optional: clean up TEST_ goals/circles created during testing if pristine seed state is desired (not strictly necessary; idempotent seed leaves Shadow Guild intact)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 991 lines — single-file design. Consider splitting into routers (auth.py, goals.py, circles.py, etc.) for maintainability if the app grows.",
+    "set_auth_cookie uses samesite='none' + secure=True which is correct for cross-site iframe/preview but mandates HTTPS. Confirmed working through the preview proxy.",
+    "MongoDB _id is consistently mapped to 'id' on response — no ObjectId/JSON serialization issues observed.",
+    "Forgot-password always returns ok (good — prevents user enumeration).",
+    "JWT verifies both httpOnly cookie and Bearer header — robust.",
+    "[EMAIL-MOCK] fallback works as designed when RESEND_API_KEY is empty."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (created)",
+    "/app/test_reports/pytest/pytest_results.xml (generated)"
+  ],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "100% on critical flows"},
+  "test_credentials": "demo@gylfa.app/demo123 and admin@gylfa.app/admin123 — both confirmed working post-test-run.",
+  "seed_data_creation": "Tests created (and cleaned up) TEST_ goals and one TEST_Circle_xxxx (left in DB; harmless, owned by demo). Demo password reset round-trip verified and restored to demo123.",
+  "mocked_apis_verified": [
+    "Resend email sending is mocked via [EMAIL-MOCK] logger lines (confirmed in backend logs for forgot-password reset link and weekly digest run)."
+  ],
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend at https://shadow-guild-3.preview.emergentagent.com/api is healthy with seed data: demo user (Aria) Lv.8/2840 XP, Shadow Guild circle (SHADOW01), 5 demo goals. Run pytest /app/backend/tests/backend_test.py as regression. Frontend testids follow pattern <page>-<element>-btn (login-demo-btn, goals-create-btn, logout-btn, notifications-bell-btn). NOT the PRD-listed shorter names."
+}
