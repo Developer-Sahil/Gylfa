@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration-2 features (Public profile + leaderboard time filters; Circle admin/moderation + invite-by-email) tested end-to-end. Backend: 22/22 pytest cases PASSED in /app/backend/tests/iter2_test.py — public profile (no-auth, 404 on bogus id, 14-day xp_history of exact length, only-unlocked achievements), circle GET ?period=all|week|month (correct sort, period_xp+period_checkins per row, my_role, admin_ids), seed re-assigns admin_ids=[Kai] on Shadow Guild with demo as owner, promote (owner only, 400 on owner, 404 on non-member, 403 from Kai admin), demote (owner only; restores admin set), DELETE member (owner 400 on owner, admin 403 on another admin, owner removes TEST_ user and activities + user.circles updated), invite-by-email (owner+admin both can send; non-member 403; empty list 422; [EMAIL-MOCK] log lines confirmed in /var/log/supervisor/backend.err.log). Frontend (Playwright): /u/:id renders WITHOUT auth (cookies+localStorage cleared) with public-profile-page + name/brand-link/cta-join/achievements/cta-block visible and 14-day recharts svg; invalid id shows public-profile-not-found. Profile page share-public-profile-btn copies the public URL containing demo id to clipboard. Circle detail page: leaderboard-period-tabs visible with all/week/month, switching to 'This week' refetches and shows PERIOD XP + check-ins-in-subtitle, role-badge-owner=1 (Aria), role-badge-admin=1 (Kai). Member kebab menus: owner has no menu (4 menus for 5 members); admin row (Kai) shows demote+remove only; member rows (Lyra/Renji/Mira) show promote+remove only. Invite-by-email modal opens, accepts 'a@x.com, b@y.com', submits and shows 'Sent 2 invites' toast. Regression spot checks (/auth/me, /achievements, /notifications) all 200.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/iter2_test.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/iter2_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1135 lines — single file. Consider splitting into modular routers (auth/circles/checkins/goals/notifications) as the codebase keeps growing.",
+    "_require_circle_role helper returns 403 'Forbidden' for both 'circle not found' (404 raised inside) and 'not in allowed' — clean. However remove_member ordering is correct (owner check 400 before admin-vs-admin 403).",
+    "GET /circles/{id} requires membership (403). Period aggregation pipeline correctly filters by date>=cutoff using ISO date strings — aligns with how checkin.date is stored.",
+    "Public profile endpoint correctly omits password_hash, email, and locked achievements. xp_history fills missing days with 0 → exactly 14 entries — matches spec.",
+    "Seed re-assignment of admin_ids on existing Shadow Guild (server.py:373) is idempotent and safely restores Kai as admin even after manual mutation.",
+    "Invite endpoint uses CircleInviteReq with EmailStr + min_length=1 → empty list returns 422 (Pydantic) and malformed emails return 422 — good validation.",
+    "Frontend correctly clears cookies for unauthenticated public profile and the axios call to /api/users/:id/public has no Authorization header (verified)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/iter2_test.py (created — 22 tests)",
+    "/app/test_reports/pytest/iter2_results.xml (generated)"
+  ],
+  "success_rate": {"backend": "100% (22/22)", "frontend": "100% on all spec'd flows"},
+  "test_credentials": "demo@gylfa.app/demo123 (owner of Shadow Guild), kai@gylfa.app/companion123 (admin), lyra/renji/mira @gylfa.app/companion123 (members), admin@gylfa.app/admin123 — all verified working post-test-run.",
+  "seed_data_creation": "Tests created TEST_remove_<uuid> and TEST_nonmember_<uuid> users via /api/auth/register and (for TEST_remove) joined SHADOW01 then were removed by demo (owner). Activity 'Aria Shadow removed TEST RemoveMe from the circle' visible in circle activity feed afterwards. Lyra was promoted then demoted; Kai was demoted then re-promoted — net seed state preserved (admin_ids=[Kai]).",
+  "mocked_apis_verified": ["Resend email — [EMAIL-MOCK] lines for t1@example.com, t2@example.com, admin-invite@example.com confirmed in /var/log/supervisor/backend.err.log during invite tests."],
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run pytest /app/backend/tests/iter2_test.py and /app/backend/tests/backend_test.py for full regression. IMPORTANT: backend auth uses cookie OR Bearer with COOKIE TAKING PRECEDENCE (server.py:104) — when writing requests-based tests that switch user identities, do NOT reuse a single requests.Session() across multiple logins; either use bare requests.post or strip cookies. The iter2_test.py shows a NoCookieSession pattern that works. Frontend testids confirmed: leaderboard-period-tabs, period-tab-{all|week|month}, role-badge-{owner|admin}, member-menu-btn-<id>, promote-btn-<id>, demote-btn-<id>, remove-btn-<id>, invite-by-email-btn, invite-modal, invite-emails-input, invite-submit-btn, share-public-profile-btn, public-profile-page, public-profile-name, public-brand-link, public-cta-join, public-achievements, public-cta-block, public-profile-not-found. Demo user id: 85495470-7850-4b16-9c34-790c798399d1. Shadow Guild id: 5acff18b-edbe-46ed-adc9-b4d9ae2e2a88, invite code SHADOW01."
+}

@@ -3,8 +3,9 @@ import { useAuth } from "@/contexts/AuthContext";
 import { api } from "@/lib/api";
 import { LineChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from "recharts";
 import {
-  Trophy, Footprints, Flame, Shield, Sparkles, Swords, Users, Lock, Loader2,
+  Trophy, Footprints, Flame, Shield, Sparkles, Swords, Users, Lock, Loader2, Share2, Check,
 } from "lucide-react";
+import { toast } from "sonner";
 
 const ICON_MAP = { footprints: Footprints, flame: Flame, shield: Shield, sparkles: Sparkles, swords: Swords, trophy: Trophy, users: Users };
 
@@ -29,6 +30,19 @@ export default function Profile() {
   const [checkins, setCheckins] = useState([]);
   const [achievements, setAchievements] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  const shareProfile = async () => {
+    const url = `${window.location.origin}/u/${user.id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      toast.success("Public profile link copied");
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      toast.error("Copy failed");
+    }
+  };
 
   useEffect(() => {
     Promise.all([api.get("/checkins"), api.get("/achievements")])
@@ -52,9 +66,19 @@ export default function Profile() {
           <p className="font-mono-label text-[10px] text-[#BAFB00]">// Profile</p>
           <h1 className="mt-1 font-display font-black text-4xl tracking-[-0.02em]">{user.name}</h1>
           <p className="mt-1 text-zinc-400 text-sm">{user.email}</p>
-          <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#BAFB00]/10 border border-[#BAFB00]/30">
-            <Sparkles className="w-3.5 h-3.5 text-[#BAFB00]" />
-            <span className="font-mono-label text-[10px] text-[#BAFB00]">Lv.{user.level} · {user.title}</span>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#BAFB00]/10 border border-[#BAFB00]/30">
+              <Sparkles className="w-3.5 h-3.5 text-[#BAFB00]" />
+              <span className="font-mono-label text-[10px] text-[#BAFB00]">Lv.{user.level} · {user.title}</span>
+            </div>
+            <button
+              onClick={shareProfile}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass text-zinc-200 hover:bg-white/10 text-xs"
+              data-testid="share-public-profile-btn"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-[#BAFB00]" /> : <Share2 className="w-3.5 h-3.5" />}
+              <span className="font-mono-label text-[10px]">Share public profile</span>
+            </button>
           </div>
 
           <div className="mt-6 grid grid-cols-3 gap-3 max-w-xl">

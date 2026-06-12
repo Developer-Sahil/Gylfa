@@ -228,6 +228,9 @@ class CircleCreate(BaseModel):
 class CircleJoinReq(BaseModel):
     invite_code: str
 
+class CircleInviteReq(BaseModel):
+    emails: List[EmailStr] = Field(min_length=1, max_length=30)
+
 # ---------- Utilities ----------
 def today_iso() -> str:
     return datetime.now(timezone.utc).date().isoformat()
@@ -356,6 +359,7 @@ async def seed_data():
             "emoji": "⚔️",
             "invite_code": "SHADOW01",
             "owner_id": demo["_id"],
+            "admin_ids": [companion_ids[0]] if companion_ids else [],
             "member_ids": member_ids,
             "created_at": now_iso(),
         })
@@ -363,7 +367,11 @@ async def seed_data():
         await db.users.update_many({"_id": {"$in": member_ids}}, {"$addToSet": {"circles": circle_id}})
     else:
         circle_id = circle["_id"]
-        await db.circles.update_one({"_id": circle_id}, {"$set": {"member_ids": member_ids}})
+        admin_set = [companion_ids[0]] if companion_ids else []
+        await db.circles.update_one(
+            {"_id": circle_id},
+            {"$set": {"member_ids": member_ids, "admin_ids": admin_set}},
+        )
         await db.users.update_many({"_id": {"$in": member_ids}}, {"$addToSet": {"circles": circle_id}})
 
     # Demo goals for Aria
@@ -839,11 +847,27 @@ async def create_checkin(payload: CheckinCreate, user: dict = Depends(get_curren
     }
 
 # ---------- Routes: Circles ----------
+def role_for(c: dict, user_id: str) -> str:
+    if user_id == c.get("owner_id"):
+        return "owner"
+    if user_id in c.get("admin_ids", []):
+        return "admin"
+    return "member"
+
 async def serialize_circle(c: dict) -> dict:
+    admin_ids = c.get("admin_ids", [])
     members = await db.users.find({"_id": {"$in": c["member_ids"]}}).to_list(500)
     member_list = [
-        {"id": m["_id"], "name": m["name"], "avatar": m.get("avatar"), "xp": m.get("xp", 0),
-         "level": m.get("level", 1), "title": m.get("title", "Initiate"), "streak": m.get("streak", 0)}
+        {
+            "id": m["_id"],
+            "name": m["name"],
+            "avatar": m.get("avatar"),
+            "xp": m.get("xp", 0),
+            "level": m.get("level", 1),
+            "title": m.get("title", "Initiate"),
+            "streak": m.get("streak", 0),
+            "role": role_for(c, m["_id"]),
+        }
         for m in members
     ]
     return {
@@ -853,6 +877,7 @@ async def serialize_circle(c: dict) -> dict:
         "emoji": c.get("emoji", "⚔️"),
         "invite_code": c["invite_code"],
         "owner_id": c["owner_id"],
+        "admin_ids": admin_ids,
         "member_ids": c["member_ids"],
         "members": member_list,
         "created_at": c.get("created_at"),
@@ -876,6 +901,7 @@ async def create_circle(payload: CircleCreate, user: dict = Depends(get_current_
         "emoji": payload.emoji,
         "invite_code": code,
         "owner_id": user["_id"],
+        "admin_ids": [],
         "member_ids": [user["_id"]],
         "created_at": now_iso(),
     }
@@ -915,7 +941,7 @@ async def join_circle(payload: CircleJoinReq, user: dict = Depends(get_current_u
     return await serialize_circle(circle)
 
 @api.get("/circles/{circle_id}")
-async def get_circle(circle_id: str, user: dict = Depends(get_current_user)):
+async def get_circle(circle_id: str, period: str = "all", user: dict = Depends(get_current_user)):
     circle = await db.circles.find_one({"_id": circle_id})
     if not circle:
         raise HTTPException(status_code=404, detail="Circle not found")
@@ -936,8 +962,127 @@ async def get_circle(circle_id: str, user: dict = Depends(get_current_user)):
         "total_checkins": member_checkins,
         "avg_streak": avg_streak,
     }
-    payload["leaderboard"] = sorted(payload["members"], key=lambda m: m["xp"], reverse=True)
+    # Leaderboard with time filter
+    period = (period or "all").lower()
+    if period in ("week", "month"):
+        days = 7 if period == "week" else 30
+        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+        pipeline = [
+            {"$match": {"user_id": {"$in": circle["member_ids"]}, "date": {"$gte": cutoff}}},
+            {"$group": {"_id": "$user_id", "period_xp": {"$sum": "$xp_earned"}, "checkins": {"$sum": 1}}},
+        ]
+        agg = {doc["_id"]: doc async for doc in db.checkins.aggregate(pipeline)}
+        board = []
+        for m in payload["members"]:
+            stats = agg.get(m["id"], {})
+            board.append({**m, "period_xp": stats.get("period_xp", 0), "period_checkins": stats.get("checkins", 0)})
+        board.sort(key=lambda x: x["period_xp"], reverse=True)
+        payload["leaderboard"] = board
+    else:
+        payload["leaderboard"] = sorted(payload["members"], key=lambda m: m["xp"], reverse=True)
+    payload["period"] = period
+    payload["my_role"] = role_for(circle, user["_id"])
     return payload
+
+# ---------- Circle moderation ----------
+async def _require_circle_role(circle_id: str, user_id: str, allowed: List[str]) -> dict:
+    circle = await db.circles.find_one({"_id": circle_id})
+    if not circle:
+        raise HTTPException(status_code=404, detail="Circle not found")
+    role = role_for(circle, user_id)
+    if role not in allowed:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return circle
+
+@api.post("/circles/{circle_id}/members/{member_id}/promote")
+async def promote_member(circle_id: str, member_id: str, user: dict = Depends(get_current_user)):
+    circle = await _require_circle_role(circle_id, user["_id"], ["owner"])
+    if member_id not in circle["member_ids"]:
+        raise HTTPException(status_code=404, detail="Not a member")
+    if member_id == circle["owner_id"]:
+        raise HTTPException(status_code=400, detail="Owner cannot be promoted")
+    await db.circles.update_one({"_id": circle_id}, {"$addToSet": {"admin_ids": member_id}})
+    return await serialize_circle(await db.circles.find_one({"_id": circle_id}))
+
+@api.post("/circles/{circle_id}/members/{member_id}/demote")
+async def demote_member(circle_id: str, member_id: str, user: dict = Depends(get_current_user)):
+    circle = await _require_circle_role(circle_id, user["_id"], ["owner"])
+    await db.circles.update_one({"_id": circle_id}, {"$pull": {"admin_ids": member_id}})
+    return await serialize_circle(await db.circles.find_one({"_id": circle_id}))
+
+@api.delete("/circles/{circle_id}/members/{member_id}")
+async def remove_member(circle_id: str, member_id: str, user: dict = Depends(get_current_user)):
+    circle = await _require_circle_role(circle_id, user["_id"], ["owner", "admin"])
+    if member_id == circle["owner_id"]:
+        raise HTTPException(status_code=400, detail="Cannot remove the owner")
+    if role_for(circle, member_id) == "admin" and role_for(circle, user["_id"]) != "owner":
+        raise HTTPException(status_code=403, detail="Only the owner can remove an admin")
+    await db.circles.update_one(
+        {"_id": circle_id},
+        {"$pull": {"member_ids": member_id, "admin_ids": member_id}},
+    )
+    await db.users.update_one({"_id": member_id}, {"$pull": {"circles": circle_id}})
+    target = await db.users.find_one({"_id": member_id})
+    if target:
+        await db.activities.insert_one({
+            "_id": str(uuid.uuid4()),
+            "circle_id": circle_id,
+            "user_id": user["_id"],
+            "user_name": user["name"],
+            "type": "remove",
+            "message": f"removed {target['name']} from the circle",
+            "created_at": now_iso(),
+        })
+    return await serialize_circle(await db.circles.find_one({"_id": circle_id}))
+
+@api.post("/circles/{circle_id}/invite")
+async def invite_members(circle_id: str, payload: CircleInviteReq, user: dict = Depends(get_current_user)):
+    circle = await _require_circle_role(circle_id, user["_id"], ["owner", "admin"])
+    sent = 0
+    link = f"{FRONTEND_URL}/circles?join={circle['invite_code']}"
+    for raw in payload.emails:
+        em = str(raw).lower()
+        html = (
+            f"<p>{user['name']} invited you to join <strong>{circle['name']}</strong> on Gylfa.</p>"
+            f"<p>Invite code: <code>{circle['invite_code']}</code></p>"
+            f'<p><a href="{link}">Open Gylfa and join</a></p>'
+        )
+        await send_email(em, f"You're invited to {circle['name']} on Gylfa", html)
+        sent += 1
+    return {"sent": sent, "invite_code": circle["invite_code"]}
+
+# ---------- Public profile ----------
+@api.get("/users/{user_id}/public")
+async def public_profile(user_id: str):
+    u = await db.users.find_one({"_id": user_id})
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    earned = set(u.get("achievements", []))
+    achievements = [{**a, "unlocked": a["id"] in earned} for a in ACHIEVEMENT_DEFS if a["id"] in earned]
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=13)).isoformat()
+    raw = await db.checkins.find({"user_id": user_id, "date": {"$gte": cutoff}}).to_list(500)
+    history = {}
+    for c in raw:
+        history[c["date"]] = history.get(c["date"], 0) + c.get("xp_earned", 0)
+    series = []
+    today_d = datetime.now(timezone.utc).date()
+    for i in range(13, -1, -1):
+        d = (today_d - timedelta(days=i)).isoformat()
+        series.append({"date": d, "xp": history.get(d, 0)})
+    return {
+        "id": u["_id"],
+        "name": u["name"],
+        "avatar": u.get("avatar"),
+        "xp": u.get("xp", 0),
+        "level": u.get("level", 1),
+        "title": u.get("title", "Initiate"),
+        "streak": u.get("streak", 0),
+        "longest_streak": u.get("longest_streak", 0),
+        "total_checkins": u.get("total_checkins", 0),
+        "achievements": achievements,
+        "xp_history": series,
+        "member_since": u.get("created_at"),
+    }
 
 # ---------- Routes: Achievements ----------
 @api.get("/achievements")

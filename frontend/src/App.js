@@ -16,6 +16,7 @@ import Circles from "@/pages/Circles";
 import CircleDetail from "@/pages/CircleDetail";
 import Profile from "@/pages/Profile";
 import AuthCallback from "@/pages/AuthCallback";
+import PublicProfile from "@/pages/PublicProfile";
 
 function AppRouter() {
   // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH.
@@ -32,6 +33,7 @@ function AppRouter() {
       <Route path="/signup" element={<Signup />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/u/:id" element={<PublicProfile />} />
       <Route
         path="/dashboard"
         element={
