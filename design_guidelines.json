@@ -1,0 +1,104 @@
+{
+  "theme": "dark",
+  "archetype": "2 (Performance Pro)",
+  "colors": {
+    "background": "#050505",
+    "surface": "#0e0e10",
+    "primary": "#BAFB00",
+    "primary_hover": "#A3E635",
+    "text_primary": "#FFFFFF",
+    "text_secondary": "#A1A1AA",
+    "border": "rgba(255,255,255,0.1)",
+    "glass_background": "rgba(255,255,255,0.04)",
+    "success": "#BAFB00",
+    "error": "#EF4444"
+  },
+  "typography": {
+    "fonts": {
+      "display": "'Outfit', sans-serif",
+      "body": "'IBM Plex Sans', sans-serif",
+      "mono": "'JetBrains Mono', monospace"
+    },
+    "headings": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl font-black tracking-[-0.02em]",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl font-extrabold tracking-tight",
+      "h3": "text-xl sm:text-2xl font-bold"
+    },
+    "body": "text-base font-normal leading-relaxed text-zinc-300",
+    "labels": "text-xs font-mono uppercase tracking-[0.2em] text-zinc-400"
+  },
+  "spacing": {
+    "generous_padding": "p-8 md:p-12 lg:p-16",
+    "glass_card_padding": "p-6 md:p-8",
+    "section_gap": "gap-16 md:gap-24"
+  },
+  "surfaces": {
+    "glass_card": "bg-[rgba(255,255,255,0.04)] backdrop-blur-xl border border-white/10 rounded-2xl md:rounded-3xl",
+    "solid_surface": "bg-[#0e0e10] border border-white/5 rounded-2xl md:rounded-3xl",
+    "button_primary": "bg-[#BAFB00] text-black hover:bg-[#A3E635] rounded-full font-bold px-6 py-3 transition-colors",
+    "button_glass": "bg-white/5 backdrop-blur-md border border-white/10 text-white hover:bg-white/10 rounded-full px-6 py-3 transition-colors"
+  },
+  "motion": {
+    "entrance": "animate-fade-up duration-500 ease-out",
+    "live_indicator": "animate-pulse bg-[#BAFB00] shadow-[0_0_12px_#BAFB00]",
+    "xp_ring": "transition-all duration-1000 ease-in-out",
+    "hover_lift": "hover:-translate-y-1 transition-transform duration-300"
+  },
+  "components": {
+    "xp_ring": {
+      "type": "custom_svg",
+      "description": "SVG circle with stroke-dasharray/stroke-dashoffset based on progress, stroke color #BAFB00, drop-shadow [0_0_15px_#BAFB00]"
+    },
+    "stat_tiles": {
+      "layout": "asymmetric bento grid",
+      "style": "glass_card",
+      "content": "Large numeric value (Outfit font) with small label (JetBrains Mono)"
+    },
+    "sidebar": {
+      "width": "w-64",
+      "style": "fixed h-screen border-r border-white/10 bg-[#050505] hidden md:flex flex-col",
+      "items": "lucide-react icons, text-zinc-400 hover:text-[#BAFB00] transition-colors"
+    }
+  },
+  "pages": [
+    "Landing",
+    "Auth shell (split screen)",
+    "Login",
+    "Signup",
+    "Forgot/Reset Password",
+    "AppLayout",
+    "Dashboard",
+    "Goals",
+    "Circles",
+    "Circle Detail",
+    "Profile"
+  ],
+  "media": {
+    "images": [
+      {
+        "category": "landing_hero",
+        "url": "https://images.pexels.com/photos/19146676/pexels-photo-19146676.jpeg",
+        "description": "Night running scene, acts as the silhouette background for the hero section."
+      },
+      {
+        "category": "auth_shell",
+        "url": "https://images.pexels.com/photos/35431571/pexels-photo-35431571.jpeg",
+        "description": "Mountain climbing scene, serves as the right panel background for the auth shell split screen."
+      }
+    ],
+    "icons": {
+      "library": "lucide-react",
+      "usage": "Use consistently across the app. No emojis."
+    }
+  },
+  "rules": {
+    "forbidden_colors": ["#9D4CDD", "#1B93A4", "purple", "violet", "teal"],
+    "forbidden_fonts": ["Inter", "Roboto", "Open Sans"],
+    "gradients": "Do not use generic gradients. Use flat colors or subtle noise/grain textures. Neon drop shadows allowed only on XP/levels.",
+    "alignment": "Left-aligned hero section, asymmetric stat tiles.",
+    "icons": "Strictly lucide-react. No emojis."
+  },
+  "testing": {
+    "attributes": "All interactive and key informational elements MUST include a `data-testid` attribute."
+  }
+}
