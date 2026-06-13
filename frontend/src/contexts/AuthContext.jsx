@@ -8,11 +8,6 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const checkAuth = useCallback(async () => {
-    // CRITICAL: If returning from OAuth callback, skip /me — AuthCallback will exchange the session_id.
-    if (typeof window !== "undefined" && window.location.hash?.includes("session_id=")) {
-      setLoading(false);
-      return;
-    }
     if (!getToken()) {
       setUser(null);
       setLoading(false);
@@ -47,13 +42,6 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
-  const googleExchange = async (sessionId) => {
-    const { data } = await api.post("/auth/google/session", { session_id: sessionId });
-    setToken(data.token);
-    setUser(data.user);
-    return data.user;
-  };
-
   const logout = async () => {
     try {
       await api.post("/auth/logout");
@@ -73,7 +61,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, googleExchange, logout, refreshUser, setUser }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser, setUser }}>
       {children}
     </AuthContext.Provider>
   );

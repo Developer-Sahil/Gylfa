@@ -15,3 +15,21 @@
   - Removed mentions of yarn in comments inside `frontend/public/index.html`.
 - Git configuration:
   - Added `.env` and `.env.*` to `.gitignore` to prevent secret key leakage.
+
+## [2026-06-14] - Remove All Emergent Platform Dependencies
+- **Backend `server.py`**: Removed `/api/auth/google/session` route (called `demobackend.emergentagent.com`); removed `httpx` import; removed `GoogleSessionReq` model.
+- **Backend `requirements.txt`**: Removed `emergentintegrations==0.2.0` (unused Emergent CLI package).
+- **Backend `.env`**: Updated `CORS_ORIGINS` and `FRONTEND_URL` from Emergent preview URL to `http://localhost:3000`.
+- **Frontend `public/index.html`**: Removed Emergent analytics script (`assets.emergent.sh/scripts/emergent-main.js`), the floating "Made with Emergent" badge, and Emergent meta/title branding. Replaced with Gylfa branding and proper Google Fonts preload.
+- **Frontend `package.json`**: Removed `@emergentbase/visual-edits` devDependency.
+- **Frontend `craco.config.js`**: Removed the `withVisualEdits` wrapper block.
+- **Frontend `Login.jsx`**: Removed `googleLogin()` function and the "Continue with Google" button.
+- **Frontend `Signup.jsx`**: Removed `googleSignup()` function and the "Continue with Google" button.
+- **Frontend `AuthContext.jsx`**: Removed `googleExchange()` function and the `session_id` hash fragment check in `checkAuth`.
+- **Frontend `App.js`**: Removed `AuthCallback` import/route and the `AppRouter` hash-detection wrapper. App is now a clean, flat route tree.
+- **Frontend `constants/testIds/home.js`**: Removed `emergentLink` test ID key.
+- **Frontend `constants/testIds/auth.js`**: Removed stale Emergent lint rule comment.
+- **Frontend `.env`**: Set `REACT_APP_BACKEND_URL=http://localhost:8000`; removed `WDS_SOCKET_PORT` and `ENABLE_HEALTH_CHECK` Emergent dev-server vars.
+- **Tests `backend_test.py` + `iter2_test.py`**: Updated fallback `BASE_URL` from Emergent preview domain to `http://localhost:8000`.
+- **Docs `architecture.md`**: Updated auth section to describe password-only flow, removed Emergent OAuth documentation.
+- **Docs `memory/PRD.md`**: Updated auth stack line to remove Emergent OAuth reference.

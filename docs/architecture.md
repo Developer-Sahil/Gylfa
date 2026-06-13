@@ -117,9 +117,10 @@ MongoDB is utilized via the motor async driver. The primary collections are:
 
 ## Authentication flow
 
-- **Standard Route**: Password hashed using `bcrypt` and compared. Success responds with a JWT token, which is stored in a cookie (`access_token`) with attributes `HttpOnly`, `Secure`, `SameSite=none`.
-- **Google OAuth Route**: Integrates via Emergent OAuth exchange. The frontend passes a `session_id` to `POST /api/auth/google/session` which calls a verification backend at `https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data`. If verified, it returns the user email and details, logging the user in or registering them if they do not exist.
-- **Header Fallback**: If cookie authorization is not found, the server checks the `Authorization: Bearer <JWT>` header.
+- **Standard (Password) Auth**: Password hashed using `bcrypt` and compared on login. Success responds with a JWT token stored in a cookie (`access_token`) with attributes `HttpOnly`, `Secure`, `SameSite=none`, and also returned in the response body for the frontend to store in `localStorage`.
+- **Header Fallback**: If the cookie is not present, the server checks the `Authorization: Bearer <JWT>` header.
+- **Password Reset**: Generates a secure token stored in `password_reset_tokens` collection with a 1-hour TTL. Sends a reset link via Resend email (or mock console log if `RESEND_API_KEY` is empty).
+- **Google OAuth**: Removed. The application uses email/password authentication only.
 
 ---
 

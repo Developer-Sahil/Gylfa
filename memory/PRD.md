@@ -7,7 +7,7 @@ Build Gylfa: a responsive full-stack social accountability platform. Users creat
 - Frontend: React (CRA) + Tailwind + shadcn/ui + framer-motion + recharts + lucide-react + sonner toasts
 - Backend: FastAPI (single `server.py`) with lifespan ctx manager + APScheduler
 - DB: MongoDB (motor async)
-- Auth: JWT custom (bcrypt + httpOnly cookies + Bearer fallback) + Emergent Google OAuth
+- Auth: JWT custom (bcrypt + httpOnly cookies + Bearer fallback) + password reset via email
 - Email: Resend with `[EMAIL-MOCK]` console fallback when `RESEND_API_KEY` is empty
 
 ## Design System

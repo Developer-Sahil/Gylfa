@@ -12,17 +12,20 @@ import jwt
 import logging
 import secrets
 import asyncio
+# pyrefly: ignore [missing-import]
 import resend
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date as dt_date
 from typing import List, Optional, Literal, Dict, Any
 
-import httpx
+
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
+# pyrefly: ignore [missing-import]
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+# pyrefly: ignore [missing-import]
 from apscheduler.triggers.cron import CronTrigger
 
 # ---------- Config ----------
@@ -192,8 +195,6 @@ class LoginReq(BaseModel):
     email: EmailStr
     password: str
 
-class GoogleSessionReq(BaseModel):
-    session_id: str
 
 class ForgotPasswordReq(BaseModel):
     email: EmailStr
@@ -569,54 +570,7 @@ async def logout(response: Response, user: dict = Depends(get_current_user)):
 async def me(user: dict = Depends(get_current_user)):
     return safe_user(user)
 
-@api.post("/auth/google/session")
-async def google_session(payload: GoogleSessionReq, response: Response):
-    # REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH.
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as hc:
-            r = await hc.get(
-                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-                headers={"X-Session-ID": payload.session_id},
-            )
-            if r.status_code != 200:
-                raise HTTPException(status_code=401, detail="Invalid OAuth session")
-            data = r.json()
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"OAuth provider error: {e}")
 
-    email = (data.get("email") or "").lower()
-    name = data.get("name") or "Gylfa Hunter"
-    picture = data.get("picture")
-    if not email:
-        raise HTTPException(status_code=400, detail="OAuth response missing email")
-
-    user = await db.users.find_one({"email": email})
-    if not user:
-        uid = str(uuid.uuid4())
-        initials = "".join([p[0] for p in name.split()[:2]]).upper() or "U"
-        user = {
-            "_id": uid,
-            "email": email,
-            "name": name,
-            "password_hash": hash_password(secrets.token_urlsafe(32)),
-            "avatar": picture or initials,
-            "xp": 0,
-            "level": 1,
-            "streak": 0,
-            "longest_streak": 0,
-            "title": "Initiate",
-            "circles": [],
-            "achievements": [],
-            "last_checkin_date": None,
-            "total_checkins": 0,
-            "auth_provider": "google",
-            "role": "user",
-            "created_at": now_iso(),
-        }
-        await db.users.insert_one(user)
-    token = create_jwt(user["_id"], email)
-    set_auth_cookie(response, token)
-    return {"token": token, "user": safe_user(user)}
 
 @api.post("/auth/forgot-password")
 async def forgot_password(payload: ForgotPasswordReq):
