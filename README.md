@@ -41,12 +41,12 @@ Gylfa is a social accountability platform with a React frontend and FastAPI back
    ```
 2. Install dependencies:
    ```bash
-   yarn install
+   npm install
    ```
 3. Create a `.env` file with the required frontend environment variables.
 4. Start the frontend app:
    ```bash
-   yarn start
+   npm start
    ```
 
 ## Environment Variables
@@ -90,7 +90,7 @@ pytest
 Run frontend tests from the `frontend/` folder:
 
 ```bash
-yarn test
+npm test
 ```
 
 ## Notes
