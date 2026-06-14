@@ -31,5 +31,10 @@
 - **Frontend `constants/testIds/auth.js`**: Removed stale Emergent lint rule comment.
 - **Frontend `.env`**: Set `REACT_APP_BACKEND_URL=http://localhost:8000`; removed `WDS_SOCKET_PORT` and `ENABLE_HEALTH_CHECK` Emergent dev-server vars.
 - **Tests `backend_test.py` + `iter2_test.py`**: Updated fallback `BASE_URL` from Emergent preview domain to `http://localhost:8000`.
-- **Docs `architecture.md`**: Updated auth section to describe password-only flow, removed Emergent OAuth documentation.
 - **Docs `memory/PRD.md`**: Updated auth stack line to remove Emergent OAuth reference.
+
+## [2026-06-14] - Stage 5: Production Configuration
+- **CI/CD**: Added `.github/workflows/ci.yml` for automated backend and frontend testing on push/pull request.
+- **Frontend Config**: Added `frontend/vercel.json` to handle client-side routing rewrites for Vercel deployment.
+- **Backend Config**: Added `render.yaml` defining the backend Docker service and required environment variables for Render infrastructure-as-code.
+- **Documentation**: Created `docs/deployment.md` outlining the steps for provisioning MongoDB Atlas, configuring Vercel, configuring Render, and wiring up the environment variables. Updated `README.md` to link to it.

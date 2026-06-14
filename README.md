@@ -1,5 +1,7 @@
 # Gylfa
 
+[![CI/CD Pipeline](https://github.com/Developer-Sahil/Gylfa/actions/workflows/ci.yml/badge.svg)](https://github.com/Developer-Sahil/Gylfa/actions/workflows/ci.yml)
+
 Gylfa is a social accountability platform with a React frontend and FastAPI backend. It includes user authentication, goal tracking, habit check-ins, game-like XP and title progression, and collaborative circles.
 
 ## Repository Structure
@@ -93,7 +95,17 @@ Run frontend tests from the `frontend/` folder:
 npm test
 ```
 
+## Deployment
+
+Gylfa is configured for immediate cloud deployment using Infrastructure-as-Code:
+- **Frontend**: Ready for Vercel via `vercel.json` and standard build scripts.
+- **Backend**: Ready for Render via `render.yaml` and Docker.
+- **Database**: Connects to any MongoDB instance (e.g. Atlas) via `MONGO_URL`.
+
+See the **[Deployment Guide](docs/deployment.md)** for detailed instructions.
+
 ## Notes
 
 - The repository currently includes untracked local `.env` files. Keep secret credentials out of version control.
+- Email & Auth: Resend (for password reset), custom JWT (HTTP-only cookies + Bearer fallback)
 - If you add example environment files, use them as templates for your local `.env` files.

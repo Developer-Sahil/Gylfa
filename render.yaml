@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: gylfa-backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    repo: https://github.com/Developer-Sahil/Gylfa
+    branch: main
+    autoDeploy: true
+    envVars:
+      - key: DB_NAME
+        value: gylfa
+      - key: MONGO_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DEMO_EMAIL
+        sync: false
+      - key: DEMO_PASSWORD
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: "Gylfa <onboarding@resend.dev>"
+      - key: DIGEST_ENABLED
+        value: "true"
