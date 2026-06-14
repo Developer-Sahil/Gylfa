@@ -3,7 +3,7 @@ services:
     name: gylfa-backend
     env: docker
     rootDir: backend
-    dockerfilePath: Dockerfile
+    dockerfilePath: ./backend/Dockerfile
     repo: https://github.com/Developer-Sahil/Gylfa
     branch: main
     autoDeploy: true
