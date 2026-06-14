@@ -156,7 +156,8 @@ export default function CircleDetail() {
     }
   };
 
-  useEffect(() => { load(period); /* eslint-disable-next-line */ }, [id, period]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(period); }, [id, period]);
 
   const copy = async () => {
     if (!data) return;
