@@ -1,0 +1,23 @@
+# Dependencies — installed by the builder stage, not needed in the final image
+node_modules/
+
+# Environment files — injected at build time via Render/Vercel env vars, not baked in
+.env
+.env.*
+.env.local
+.env.*.local
+
+# Build output — rebuilt fresh inside Docker
+build/
+dist/
+
+# Testing and coverage
+coverage/
+
+# Git
+.git/
+.gitignore
+
+# Misc
+*.md
+npm-debug.log*

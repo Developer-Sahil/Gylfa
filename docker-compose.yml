@@ -1,16 +1,6 @@
 version: "3.8"
 
 services:
-  mongodb:
-    image: mongo:latest
-    container_name: gylfa_mongodb
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    networks:
-      - gylfa_network
-
   backend:
     build:
       context: ./backend
@@ -19,20 +9,27 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MONGO_URL=mongodb://mongodb:27017
-      - DB_NAME=gylfa
-      - JWT_SECRET=supersecretjwtkeygylfa123
-      - FRONTEND_URL=http://localhost:3000
-      - ADMIN_EMAIL=admin@gylfa.app
-      - ADMIN_PASSWORD=admin123
-      - DEMO_EMAIL=demo@gylfa.app
-      - DEMO_PASSWORD=demo123
-      - RESEND_API_KEY=
-      - EMAIL_FROM=Gylfa <onboarding@resend.dev>
-      - DIGEST_ENABLED=true
-      - CORS_ORIGINS=http://localhost:3000
-    depends_on:
-      - mongodb
+      - FIREBASE_SERVICE_ACCOUNT=/app/firebase-service-account.json
+      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@gylfa.app}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - DEMO_EMAIL=${DEMO_EMAIL:-demo@gylfa.app}
+      - DEMO_PASSWORD=${DEMO_PASSWORD:-demo123}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - EMAIL_FROM=${EMAIL_FROM:-Gylfa <onboarding@resend.dev>}
+      - DIGEST_ENABLED=${DIGEST_ENABLED:-true}
+    volumes:
+      # Mount the service account key at runtime — never bake secrets into the image
+      - ./backend/firebase-service-account.json:/app/firebase-service-account.json:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
     networks:
       - gylfa_network
 
@@ -42,16 +39,23 @@ services:
       dockerfile: Dockerfile
     container_name: gylfa_frontend
     ports:
-      - "3000:3000"
+      - "3000:80"
     environment:
-      - REACT_APP_BACKEND_URL=http://localhost:8000
+      # Note: React env vars must be set at BUILD time (baked in during npm run build).
+      # For local Docker use, rebuild the image after changing these.
+      - REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL:-http://localhost:8000}
+      - REACT_APP_FIREBASE_API_KEY=${REACT_APP_FIREBASE_API_KEY}
+      - REACT_APP_FIREBASE_AUTH_DOMAIN=${REACT_APP_FIREBASE_AUTH_DOMAIN}
+      - REACT_APP_FIREBASE_PROJECT_ID=${REACT_APP_FIREBASE_PROJECT_ID}
+      - REACT_APP_FIREBASE_STORAGE_BUCKET=${REACT_APP_FIREBASE_STORAGE_BUCKET}
+      - REACT_APP_FIREBASE_MESSAGING_SENDER_ID=${REACT_APP_FIREBASE_MESSAGING_SENDER_ID}
+      - REACT_APP_FIREBASE_APP_ID=${REACT_APP_FIREBASE_APP_ID}
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
     networks:
       - gylfa_network
-
-volumes:
-  mongo_data:
 
 networks:
   gylfa_network:

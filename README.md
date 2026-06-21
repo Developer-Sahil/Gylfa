@@ -2,110 +2,192 @@
 
 [![CI/CD Pipeline](https://github.com/Developer-Sahil/Gylfa/actions/workflows/ci.yml/badge.svg)](https://github.com/Developer-Sahil/Gylfa/actions/workflows/ci.yml)
 
-Gylfa is a social accountability platform with a React frontend and FastAPI backend. It includes user authentication, goal tracking, habit check-ins, game-like XP and title progression, and collaborative circles.
+**Gylfa** is a social accountability platform — track personal goals, earn XP, climb levels, and stay consistent alongside your circle. Built with React + FastAPI + Firebase.
 
-## Repository Structure
+---
 
-- `backend/` - FastAPI backend service
-- `frontend/` - React frontend app using Create React App and CRACO
-- `test_reports/` - generated test report files
-- `backend/tests/` - backend API tests
+## Features
+
+- 🔐 **Firebase Authentication** — email/password and Google OAuth
+- 🎯 **Goal Tracking** — daily and weekly goals with XP rewards
+- 🔥 **Streak System** — daily check-ins build streaks and trigger milestone notifications
+- 🏆 **Gamification** — XP, levels, titles (Initiate → Monarch), and achievement badges
+- 👥 **Circles** — invite-only accountability groups with a shared activity feed and leaderboard
+- 📬 **Weekly Digest** — automated email summaries via Resend
+- 🔔 **Notifications** — in-app level-up, streak milestone, and digest alerts
+
+---
 
 ## Tech Stack
 
-- Backend: Python, FastAPI, Motor, MongoDB, Pydantic, JWT auth
-- Frontend: React, Tailwind CSS, Radix UI, React Router, Axios, React Query
-- Testing: pytest for backend, CRA test scripts for frontend
+| Layer | Technology |
+|-------|-----------|
+| **Frontend** | React 19, CRACO, Tailwind CSS, Radix UI, React Router v7, Axios, TanStack Query, Framer Motion |
+| **Backend** | Python 3.11, FastAPI, Uvicorn, APScheduler, Pydantic v2 |
+| **Auth** | Firebase Authentication (email/password + Google) |
+| **Database** | Cloud Firestore (via Firebase Admin SDK) |
+| **Email** | Resend |
+| **Infra** | Docker (multi-stage), Render (backend), Vercel (frontend) |
+| **Testing** | pytest (backend), CRA test scripts (frontend) |
 
-## Setup
+---
+
+## Repository Structure
+
+```
+Gylfa/
+├── backend/
+│   ├── server.py              # FastAPI app — all routes and business logic
+│   ├── requirements.txt       # Runtime dependencies (production)
+│   ├── requirements-dev.txt   # Dev/test dependencies
+│   ├── Dockerfile             # Production image (python:3.11-slim + uvicorn)
+│   ├── .dockerignore          # Excludes secrets from Docker build context
+│   └── tests/                 # pytest test suite
+├── frontend/
+│   ├── src/                   # React source (pages, components, hooks, contexts)
+│   ├── Dockerfile             # Multi-stage build: Node builder → nginx:alpine
+│   ├── nginx.conf             # SPA routing + gzip + asset caching
+│   └── .dockerignore
+├── docs/
+│   ├── architecture.md        # Firestore schema, auth flow, gamification mechanics
+│   ├── deployment.md          # Full cloud deployment guide
+│   └── setup.md               # Local development setup
+├── docker-compose.yml         # Full local stack (backend + frontend)
+├── render.yaml                # Render infrastructure-as-code (backend)
+└── LOG.md                     # Change log
+```
+
+---
+
+## Local Development
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- A Firebase project with **Authentication** (email/password) and **Firestore** enabled
+- A Firebase **service account key** JSON file (download from Firebase Console → Project Settings → Service accounts)
 
 ### Backend
 
-1. Navigate to the backend folder:
-   ```bash
-   cd backend
-   ```
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Create a `.env` file with the required environment variables.
-4. Start the backend server:
-   ```bash
-   uvicorn server:app --reload --host 0.0.0.0 --port 8000
-   ```
+```bash
+cd backend
+
+# Install runtime + dev dependencies
+pip install -r requirements-dev.txt
+
+# Create your local env file
+cp .env.example .env   # or create manually (see Environment Variables below)
+
+# Place your Firebase service account key in backend/
+# (named firebase-service-account.json — already gitignored)
+
+# Start the dev server
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
+```
 
 ### Frontend
 
-1. Navigate to the frontend folder:
-   ```bash
-   cd frontend
-   ```
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Create a `.env` file with the required frontend environment variables.
-4. Start the frontend app:
-   ```bash
-   npm start
-   ```
+```bash
+cd frontend
+
+# Install dependencies
+npm install --legacy-peer-deps
+
+# Create your local env file
+cp .env.example .env   # or create manually (see Environment Variables below)
+
+# Start the dev server
+npm start
+```
+
+### Docker (full stack)
+
+```bash
+# From the project root
+docker compose up --build
+```
+
+- Backend: `http://localhost:8000`
+- Frontend: `http://localhost:3000`
+- Health check: `http://localhost:8000/api/health`
+
+> **Note**: React `REACT_APP_*` vars are baked in at build time. Rebuild the frontend image after changing them.
+
+---
 
 ## Environment Variables
 
-### Backend
+### Backend (`backend/.env`)
 
-The backend requires these environment variables:
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `FIREBASE_SERVICE_ACCOUNT` | Path to the service account JSON file | ✅ |
+| `FIREBASE_PROJECT_ID` | Your Firebase project ID | ✅ |
+| `FRONTEND_URL` | Frontend origin URL (for password reset links) | ✅ |
+| `CORS_ORIGINS` | Comma-separated allowed origins (no trailing slash) | ✅ |
+| `ADMIN_EMAIL` | Seed admin account email | ✅ |
+| `ADMIN_PASSWORD` | Seed admin account password | ✅ |
+| `DEMO_EMAIL` | Seed demo account email | ✅ |
+| `DEMO_PASSWORD` | Seed demo account password | ✅ |
+| `RESEND_API_KEY` | Resend API key (leave blank to mock emails in dev) | ⬜ |
+| `EMAIL_FROM` | Sender name + address for transactional emails | ⬜ |
+| `DIGEST_ENABLED` | Enable weekly digest scheduler (`true`/`false`) | ⬜ |
 
-- `MONGO_URL`
-- `DB_NAME`
-- `JWT_SECRET`
-- `FRONTEND_URL`
-- `ADMIN_EMAIL`
-- `ADMIN_PASSWORD`
-- `DEMO_EMAIL`
-- `DEMO_PASSWORD`
-- `RESEND_API_KEY`
-- `EMAIL_FROM`
-- `DIGEST_ENABLED`
-- `CORS_ORIGINS`
+### Frontend (`frontend/.env`)
 
-### Frontend
+| Variable | Description |
+|----------|-------------|
+| `REACT_APP_BACKEND_URL` | Backend API base URL |
+| `REACT_APP_FIREBASE_API_KEY` | Firebase web app API key |
+| `REACT_APP_FIREBASE_AUTH_DOMAIN` | Firebase auth domain |
+| `REACT_APP_FIREBASE_PROJECT_ID` | Firebase project ID |
+| `REACT_APP_FIREBASE_STORAGE_BUCKET` | Firebase storage bucket |
+| `REACT_APP_FIREBASE_MESSAGING_SENDER_ID` | Firebase messaging sender ID |
+| `REACT_APP_FIREBASE_APP_ID` | Firebase app ID |
+| `REACT_APP_FIREBASE_MEASUREMENT_ID` | Firebase Analytics measurement ID (optional) |
 
-The frontend may use variables such as:
-
-- `REACT_APP_BACKEND_URL`
+---
 
 ## Testing
 
 ### Backend
 
-Run backend tests from the `backend/` folder:
-
 ```bash
 cd backend
+pip install -r requirements-dev.txt
 pytest
 ```
 
 ### Frontend
 
-Run frontend tests from the `frontend/` folder:
-
 ```bash
+cd frontend
 npm test
 ```
 
+CI runs automatically on every push and pull request to `main` via GitHub Actions.
+
+---
+
 ## Deployment
 
-Gylfa is configured for immediate cloud deployment using Infrastructure-as-Code:
-- **Frontend**: Ready for Vercel via `vercel.json` and standard build scripts.
-- **Backend**: Ready for Render via `render.yaml` and Docker.
-- **Database**: Connects to any MongoDB instance (e.g. Atlas) via `MONGO_URL`.
+Gylfa is production-ready and configured for one-click cloud deployment:
 
-See the **[Deployment Guide](docs/deployment.md)** for detailed instructions.
+- **Backend** → [Render](https://render.com) via `render.yaml` (Docker, health-checked)
+- **Frontend** → [Vercel](https://vercel.com) via `vercel.json` (SPA rewrites)
 
-## Notes
+See **[docs/deployment.md](docs/deployment.md)** for the complete step-by-step guide covering Firebase setup, Render Secret Files, and Vercel environment variables.
 
-- The repository currently includes untracked local `.env` files. Keep secret credentials out of version control.
-- Email & Auth: Resend (for password reset), custom JWT (HTTP-only cookies + Bearer fallback)
-- If you add example environment files, use them as templates for your local `.env` files.
+---
+
+## Seed Data
+
+On first boot the backend automatically seeds (idempotent):
+
+- **Admin** account (`ADMIN_EMAIL` / `ADMIN_PASSWORD`)
+- **Demo user** "Aria Shadow" with XP, streaks, goals, and check-ins
+- **4 companions** in a "Shadow Guild" circle
+- Sample activities, notifications, and leaderboard data
+
+Demo credentials: see your `.env` file.

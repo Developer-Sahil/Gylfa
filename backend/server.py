@@ -1,4 +1,4 @@
-"""Gylfa - Social Accountability Platform Backend."""
+"""Gylfa - Social Accountability Platform Backend (Firebase Auth + Firestore)."""
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -7,21 +7,22 @@ load_dotenv(ROOT_DIR / ".env")
 
 import os
 import uuid
-import bcrypt
-import jwt
 import logging
 import secrets
 import asyncio
 # pyrefly: ignore [missing-import]
 import resend
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta, date as dt_date
-from typing import List, Optional, Literal, Dict, Any
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Literal
 
+import firebase_admin
+from firebase_admin import credentials, auth as fb_auth
+from google.cloud import firestore
+from google.cloud.firestore_v1.async_client import AsyncClient as AsyncFirestoreClient
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
 # pyrefly: ignore [missing-import]
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -29,11 +30,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # ---------- Config ----------
-MONGO_URL = os.environ["MONGO_URL"]
-DB_NAME = os.environ["DB_NAME"]
-JWT_SECRET = os.environ["JWT_SECRET"]
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRES_DAYS = 7
+FIREBASE_SERVICE_ACCOUNT = os.environ.get("FIREBASE_SERVICE_ACCOUNT", str(ROOT_DIR / "firebase-service-account.json"))
+FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@gylfa.app")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
@@ -42,13 +40,28 @@ DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "demo123")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "Gylfa <onboarding@resend.dev>")
 DIGEST_ENABLED = os.environ.get("DIGEST_ENABLED", "true").lower() == "true"
-CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+CORS_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("gylfa")
 
-client = AsyncIOMotorClient(MONGO_URL)
-db = client[DB_NAME]
+# ---------- Firebase Admin SDK ----------
+_sa_path = Path(FIREBASE_SERVICE_ACCOUNT)
+if _sa_path.exists():
+    cred = credentials.Certificate(str(_sa_path))
+    firebase_admin.initialize_app(cred)
+    logger.info(f"Firebase Admin initialized from service account: {_sa_path}")
+elif FIREBASE_PROJECT_ID:
+    # Application Default Credentials (Cloud Run / GCP environments)
+    firebase_admin.initialize_app(options={"projectId": FIREBASE_PROJECT_ID})
+    logger.info("Firebase Admin initialized with Application Default Credentials")
+else:
+    raise RuntimeError(
+        "Firebase not configured. Set FIREBASE_SERVICE_ACCOUNT path or FIREBASE_PROJECT_ID env var."
+    )
+
+# ---------- Firestore Async Client ----------
+db: AsyncFirestoreClient = firestore.AsyncClient()
 
 # ---------- Email Helper ----------
 async def send_email(to: str, subject: str, html: str):
@@ -69,42 +82,8 @@ async def send_email(to: str, subject: str, html: str):
         return {"id": "mock-fallback", "mocked": True, "error": str(e)}
 
 # ---------- Auth Helpers ----------
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-def verify_password(plain: str, hashed: str) -> bool:
-    try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
-        return False
-
-def create_jwt(user_id: str, email: str) -> str:
-    payload = {
-        "sub": user_id,
-        "email": email,
-        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRES_DAYS),
-        "iat": datetime.now(timezone.utc),
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-def decode_jwt(token: str) -> dict:
-    return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-
-def set_auth_cookie(response: Response, token: str):
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=JWT_EXPIRES_DAYS * 24 * 3600,
-        path="/",
-    )
-
-def clear_auth_cookie(response: Response):
-    response.delete_cookie("access_token", path="/")
-
 async def get_current_user(request: Request) -> dict:
+    """Verify Firebase ID token and fetch user profile from Firestore."""
     token = request.cookies.get("access_token")
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -113,15 +92,18 @@ async def get_current_user(request: Request) -> dict:
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
-        payload = decode_jwt(token)
-    except jwt.ExpiredSignatureError:
+        decoded = fb_auth.verify_id_token(token)
+    except fb_auth.ExpiredIdTokenError:
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
+    except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
-    user = await db.users.find_one({"_id": payload["sub"]})
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    user.pop("password_hash", None)
+
+    uid = decoded["uid"]
+    doc = await db.collection("users").document(uid).get()
+    if not doc.exists:
+        raise HTTPException(status_code=401, detail="User profile not found")
+    user = doc.to_dict()
+    user["_id"] = uid
     return user
 
 async def require_admin(user: dict = Depends(get_current_user)) -> dict:
@@ -185,16 +167,10 @@ def check_achievements(user: dict) -> List[str]:
             new_unlocked.append(ach_id)
     return new_unlocked
 
-# ---------- Models ----------
-class RegisterReq(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=6)
+# ---------- Pydantic Models ----------
+class ProfileUpsertReq(BaseModel):
+    """Called by frontend after Firebase sign-up to create/update the Firestore profile."""
     name: str = Field(min_length=1)
-
-class LoginReq(BaseModel):
-    email: EmailStr
-    password: str
-
 
 class ForgotPasswordReq(BaseModel):
     email: EmailStr
@@ -241,76 +217,131 @@ def now_iso() -> str:
 
 def safe_user(u: dict) -> dict:
     u = dict(u)
-    u.pop("password_hash", None)
-    u["id"] = u.get("_id")
-    u.pop("_id", None)
+    uid = u.pop("_id", u.get("id"))
+    u["id"] = uid
+    u.pop("id", None)
+    u["id"] = uid
     return u
 
 def gen_invite_code() -> str:
     return secrets.token_hex(4).upper()
 
+# ---------- Firestore Helpers ----------
+async def get_user_doc(uid: str) -> Optional[dict]:
+    doc = await db.collection("users").document(uid).get()
+    if not doc.exists:
+        return None
+    u = doc.to_dict()
+    u["_id"] = uid
+    return u
+
+async def set_user_doc(uid: str, data: dict):
+    await db.collection("users").document(uid).set(data, merge=True)
+
+async def find_one(collection: str, field: str, value) -> Optional[dict]:
+    """Query Firestore for a single document matching field == value."""
+    docs = db.collection(collection).where(field, "==", value).limit(1).stream()
+    async for doc in docs:
+        result = doc.to_dict()
+        result["_id"] = doc.id
+        return result
+    return None
+
+async def find_many(collection: str, field: str, value, order_by: Optional[str] = None, desc: bool = False, limit: int = 500) -> List[dict]:
+    q = db.collection(collection).where(field, "==", value)
+    if order_by:
+        direction = firestore.Query.DESCENDING if desc else firestore.Query.ASCENDING
+        q = q.order_by(order_by, direction=direction)
+    q = q.limit(limit)
+    results = []
+    async for doc in q.stream():
+        r = doc.to_dict()
+        r["_id"] = doc.id
+        results.append(r)
+    return results
+
+async def create_doc(collection: str, data: dict, doc_id: Optional[str] = None) -> str:
+    """Insert a document; returns the document ID."""
+    if doc_id is None:
+        doc_id = str(uuid.uuid4())
+    await db.collection(collection).document(doc_id).set(data)
+    return doc_id
+
+async def update_doc(collection: str, doc_id: str, updates: dict):
+    await db.collection(collection).document(doc_id).update(updates)
+
+async def delete_doc(collection: str, doc_id: str):
+    await db.collection(collection).document(doc_id).delete()
+
+async def doc_exists(collection: str, doc_id: str) -> bool:
+    doc = await db.collection(collection).document(doc_id).get()
+    return doc.exists
+
+async def count_docs(collection: str, field: str, value) -> int:
+    # Firestore doesn't have a native count; stream and count
+    n = 0
+    async for _ in db.collection(collection).where(field, "==", value).stream():
+        n += 1
+    return n
+
+# ---------- Firebase Auth helper: create or get user ----------
+async def _firebase_create_or_get_user(email: str, password: str, display_name: str) -> str:
+    """Create a Firebase Auth user (idempotent). Returns uid."""
+    try:
+        fb_user = fb_auth.create_user(email=email, password=password, display_name=display_name)
+        return fb_user.uid
+    except fb_auth.EmailAlreadyExistsError:
+        fb_user = fb_auth.get_user_by_email(email)
+        return fb_user.uid
+
 # ---------- App init ----------
 api = APIRouter(prefix="/api")
-
 scheduler: Optional[AsyncIOScheduler] = None
 
 # ---------- Seeding ----------
 async def seed_data():
-    """Idempotent seeding of admin, demo user, companions, circle, goals."""
+    """Idempotent seeding of admin, demo user, companions, circle, goals in Firestore."""
+    today = today_iso()
+
     # Admin
-    admin = await db.users.find_one({"email": ADMIN_EMAIL})
-    if not admin:
-        await db.users.insert_one({
-            "_id": str(uuid.uuid4()),
+    admin_existing = await find_one("users", "email", ADMIN_EMAIL)
+    if not admin_existing:
+        admin_uid = await asyncio.to_thread(_firebase_create_or_get_user, ADMIN_EMAIL, ADMIN_PASSWORD, "Gylfa Admin")
+        await set_user_doc(admin_uid, {
             "email": ADMIN_EMAIL,
             "name": "Gylfa Admin",
-            "password_hash": hash_password(ADMIN_PASSWORD),
             "avatar": "GA",
-            "xp": 0,
-            "level": 1,
-            "streak": 0,
-            "longest_streak": 0,
-            "title": "Initiate",
-            "circles": [],
-            "achievements": [],
-            "last_checkin_date": None,
-            "total_checkins": 0,
-            "auth_provider": "password",
-            "role": "admin",
+            "xp": 0, "level": 1, "streak": 0, "longest_streak": 0,
+            "title": "Initiate", "circles": [], "achievements": [],
+            "last_checkin_date": None, "total_checkins": 0,
+            "auth_provider": "password", "role": "admin",
             "created_at": now_iso(),
         })
-    elif not verify_password(ADMIN_PASSWORD, admin["password_hash"]):
-        await db.users.update_one({"_id": admin["_id"]}, {"$set": {"password_hash": hash_password(ADMIN_PASSWORD)}})
+        admin_uid_val = admin_uid
+    else:
+        admin_uid_val = admin_existing["_id"]
 
     # Demo user (Aria Shadow)
-    demo = await db.users.find_one({"email": DEMO_EMAIL})
-    today = today_iso()
-    if not demo:
-        demo_id = str(uuid.uuid4())
-        await db.users.insert_one({
-            "_id": demo_id,
+    demo_existing = await find_one("users", "email", DEMO_EMAIL)
+    if not demo_existing:
+        demo_uid = await asyncio.to_thread(_firebase_create_or_get_user, DEMO_EMAIL, DEMO_PASSWORD, "Aria Shadow")
+        xp = 2840
+        lvl = level_for_xp(xp)
+        await set_user_doc(demo_uid, {
             "email": DEMO_EMAIL,
             "name": "Aria Shadow",
-            "password_hash": hash_password(DEMO_PASSWORD),
             "avatar": "AS",
-            "xp": 2840,
-            "level": level_for_xp(2840),
-            "streak": 12,
-            "longest_streak": 14,
-            "title": title_for_level(level_for_xp(2840)),
-            "circles": [],
-            "achievements": ["first_checkin", "streak_3", "streak_7", "level_5", "xp_1000"],
-            "last_checkin_date": today,
-            "total_checkins": 38,
-            "auth_provider": "password",
-            "role": "user",
+            "xp": xp, "level": lvl, "streak": 12, "longest_streak": 14,
+            "title": title_for_level(lvl),
+            "circles": [], "achievements": ["first_checkin", "streak_3", "streak_7", "level_5", "xp_1000"],
+            "last_checkin_date": today, "total_checkins": 38,
+            "auth_provider": "password", "role": "user",
             "created_at": now_iso(),
         })
-        demo = await db.users.find_one({"_id": demo_id})
+        demo_uid_val = demo_uid
     else:
-        if not verify_password(DEMO_PASSWORD, demo["password_hash"]):
-            await db.users.update_one({"_id": demo["_id"]}, {"$set": {"password_hash": hash_password(DEMO_PASSWORD)}})
-        await db.users.update_one({"_id": demo["_id"]}, {"$set": {"last_checkin_date": today}})
+        demo_uid_val = demo_existing["_id"]
+        await update_doc("users", demo_uid_val, {"last_checkin_date": today})
 
     # Companions
     companions = [
@@ -321,64 +352,47 @@ async def seed_data():
     ]
     companion_ids = []
     for c in companions:
-        existing = await db.users.find_one({"email": c["email"]})
+        existing = await find_one("users", "email", c["email"])
         if not existing:
-            cid = str(uuid.uuid4())
+            cuid = await asyncio.to_thread(_firebase_create_or_get_user, c["email"], "companion123", c["name"])
             lvl = level_for_xp(c["xp"])
-            await db.users.insert_one({
-                "_id": cid,
-                "email": c["email"],
-                "name": c["name"],
-                "password_hash": hash_password("companion123"),
-                "avatar": c["avatar"],
-                "xp": c["xp"],
-                "level": lvl,
-                "streak": c["streak"],
-                "longest_streak": c["longest_streak"],
-                "title": title_for_level(lvl),
-                "circles": [],
-                "achievements": [],
-                "last_checkin_date": today,
-                "total_checkins": 30,
-                "auth_provider": "password",
-                "role": "user",
-                "created_at": now_iso(),
+            await set_user_doc(cuid, {
+                "email": c["email"], "name": c["name"], "avatar": c["avatar"],
+                "xp": c["xp"], "level": lvl, "streak": c["streak"], "longest_streak": c["longest_streak"],
+                "title": title_for_level(lvl), "circles": [], "achievements": [],
+                "last_checkin_date": today, "total_checkins": 30,
+                "auth_provider": "password", "role": "user", "created_at": now_iso(),
             })
-            companion_ids.append(cid)
+            companion_ids.append(cuid)
         else:
             companion_ids.append(existing["_id"])
 
-    # Circle "Shadow Guild" with invite SHADOW01
-    circle = await db.circles.find_one({"invite_code": "SHADOW01"})
-    member_ids = [demo["_id"]] + companion_ids
-    if not circle:
+    # Circle "Shadow Guild"
+    circle_existing = await find_one("circles", "invite_code", "SHADOW01")
+    member_ids = [demo_uid_val] + companion_ids
+    if not circle_existing:
         circle_id = str(uuid.uuid4())
-        await db.circles.insert_one({
-            "_id": circle_id,
-            "name": "Shadow Guild",
-            "description": "An elite circle of nocturnal hunters.",
-            "emoji": "⚔️",
-            "invite_code": "SHADOW01",
-            "owner_id": demo["_id"],
-            "admin_ids": [companion_ids[0]] if companion_ids else [],
-            "member_ids": member_ids,
-            "created_at": now_iso(),
-        })
-        # update users circles
-        await db.users.update_many({"_id": {"$in": member_ids}}, {"$addToSet": {"circles": circle_id}})
+        await create_doc("circles", {
+            "name": "Shadow Guild", "description": "An elite circle of nocturnal hunters.",
+            "emoji": "⚔️", "invite_code": "SHADOW01",
+            "owner_id": demo_uid_val, "admin_ids": [companion_ids[0]] if companion_ids else [],
+            "member_ids": member_ids, "created_at": now_iso(),
+        }, doc_id=circle_id)
+        for mid in member_ids:
+            await update_doc("users", mid, {"circles": firestore.ArrayUnion([circle_id])})
     else:
-        circle_id = circle["_id"]
-        admin_set = [companion_ids[0]] if companion_ids else []
-        await db.circles.update_one(
-            {"_id": circle_id},
-            {"$set": {"member_ids": member_ids, "admin_ids": admin_set}},
-        )
-        await db.users.update_many({"_id": {"$in": member_ids}}, {"$addToSet": {"circles": circle_id}})
+        circle_id = circle_existing["_id"]
+        await update_doc("circles", circle_id, {
+            "member_ids": member_ids,
+            "admin_ids": [companion_ids[0]] if companion_ids else [],
+        })
+        for mid in member_ids:
+            await update_doc("users", mid, {"circles": firestore.ArrayUnion([circle_id])})
 
     # Demo goals for Aria
-    existing_goals = await db.goals.count_documents({"user_id": demo["_id"]})
+    existing_goals_count = await count_docs("goals", "user_id", demo_uid_val)
     yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
-    if existing_goals == 0:
+    if existing_goals_count == 0:
         seed_goals = [
             {"title": "Morning workout", "description": "30-min strength + mobility", "frequency": "daily", "xp_reward": 60, "icon": "dumbbell", "last": today},
             {"title": "Deep work block", "description": "90 minutes of focused work", "frequency": "daily", "xp_reward": 80, "icon": "brain", "last": today},
@@ -387,84 +401,45 @@ async def seed_data():
             {"title": "Weekly review", "description": "Sunday journal + plan", "frequency": "weekly", "xp_reward": 120, "icon": "calendar-check", "last": yesterday},
         ]
         for g in seed_goals:
-            await db.goals.insert_one({
-                "_id": str(uuid.uuid4()),
-                "user_id": demo["_id"],
-                "title": g["title"],
-                "description": g["description"],
-                "frequency": g["frequency"],
-                "xp_reward": g["xp_reward"],
-                "icon": g["icon"],
-                "total_completions": 5,
-                "last_completed_date": g["last"],
-                "created_at": now_iso(),
+            await create_doc("goals", {
+                "user_id": demo_uid_val, "title": g["title"], "description": g["description"],
+                "frequency": g["frequency"], "xp_reward": g["xp_reward"], "icon": g["icon"],
+                "total_completions": 5, "last_completed_date": g["last"], "created_at": now_iso(),
             })
 
-    # Historical check-ins (10)
-    existing_checkins = await db.checkins.count_documents({"user_id": demo["_id"]})
-    if existing_checkins == 0:
-        aria_goals = await db.goals.find({"user_id": demo["_id"]}).to_list(50)
+    # Historical check-ins
+    existing_checkins_count = await count_docs("checkins", "user_id", demo_uid_val)
+    if existing_checkins_count == 0:
+        aria_goals = await find_many("goals", "user_id", demo_uid_val)
         for i in range(10):
             d = (datetime.now(timezone.utc).date() - timedelta(days=i)).isoformat()
             g = aria_goals[i % len(aria_goals)]
-            await db.checkins.insert_one({
-                "_id": str(uuid.uuid4()),
-                "user_id": demo["_id"],
-                "goal_id": g["_id"],
-                "goal_title": g["title"],
-                "xp_earned": g["xp_reward"],
-                "date": d,
-                "note": "",
+            await create_doc("checkins", {
+                "user_id": demo_uid_val, "goal_id": g["_id"], "goal_title": g["title"],
+                "xp_earned": g["xp_reward"], "date": d, "note": "",
                 "created_at": (datetime.now(timezone.utc) - timedelta(days=i)).isoformat(),
             })
 
-    # Seed activities (7)
-    existing_acts = await db.activities.count_documents({"circle_id": circle_id})
-    if existing_acts == 0:
+    # Seed activities
+    existing_acts_count = await count_docs("activities", "circle_id", circle_id)
+    if existing_acts_count == 0:
         seed_acts = [
-            (demo["_id"], "Aria Shadow", "checkin", "completed Deep work block (+80 XP)"),
+            (demo_uid_val, "Aria Shadow", "checkin", "completed Deep work block (+80 XP)"),
             (companion_ids[0], "Kai Mercer", "checkin", "completed Morning workout (+60 XP)"),
             (companion_ids[1], "Lyra Voss", "level_up", "reached Level 7"),
-            (demo["_id"], "Aria Shadow", "streak", "hit a 12-day streak"),
+            (demo_uid_val, "Aria Shadow", "streak", "hit a 12-day streak"),
             (companion_ids[2], "Renji Tao", "checkin", "completed Read 20 pages (+40 XP)"),
             (companion_ids[3], "Mira Quinn", "checkin", "completed Cold shower (+30 XP)"),
             (companion_ids[0], "Kai Mercer", "streak", "hit an 18-day streak"),
         ]
-        for i, (uid, uname, atype, msg) in enumerate(seed_acts):
-            await db.activities.insert_one({
-                "_id": str(uuid.uuid4()),
-                "circle_id": circle_id,
-                "user_id": uid,
-                "user_name": uname,
-                "type": atype,
-                "message": msg,
+        for i, (uid_val, uname, atype, msg) in enumerate(seed_acts):
+            await create_doc("activities", {
+                "circle_id": circle_id, "user_id": uid_val, "user_name": uname,
+                "type": atype, "message": msg,
                 "created_at": (datetime.now(timezone.utc) - timedelta(hours=i * 3)).isoformat(),
             })
 
-    # Write test credentials
-    creds_path = Path("/app/memory/test_credentials.md")
-    creds_path.parent.mkdir(parents=True, exist_ok=True)
-    creds_path.write_text(
-        "# Gylfa Test Credentials\n\n"
-        f"## Admin\n- email: `{ADMIN_EMAIL}`\n- password: `{ADMIN_PASSWORD}`\n- role: admin\n\n"
-        f"## Demo User (Aria Shadow)\n- email: `{DEMO_EMAIL}`\n- password: `{DEMO_PASSWORD}`\n- role: user\n- XP: 2840 (Lv.8 Adept), streak 12, longest 14\n\n"
-        "## Companions (password: `companion123`)\n"
-        "- kai@gylfa.app — Kai Mercer\n- lyra@gylfa.app — Lyra Voss\n- renji@gylfa.app — Renji Tao\n- mira@gylfa.app — Mira Quinn\n\n"
-        "## Circle\n- name: Shadow Guild\n- invite_code: `SHADOW01`\n\n"
-        "## Auth endpoints\n"
-        "- POST /api/auth/register\n- POST /api/auth/login\n- POST /api/auth/logout\n- GET /api/auth/me\n"
-        "- POST /api/auth/google/session\n- POST /api/auth/forgot-password\n- POST /api/auth/reset-password\n"
-    )
     logger.info("Seeding complete.")
-
-async def ensure_indexes():
-    await db.users.create_index("email", unique=True)
-    await db.circles.create_index("invite_code", unique=True)
-    await db.password_reset_tokens.create_index("token", unique=True)
-    await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
-    await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
-    await db.activities.create_index([("circle_id", 1), ("created_at", -1)])
-    await db.checkins.create_index([("user_id", 1), ("date", -1)])
 
 # ---------- Weekly Digest ----------
 async def run_weekly_digest():
@@ -472,9 +447,16 @@ async def run_weekly_digest():
         return {"sent": 0, "skipped": True}
     logger.info("Running weekly digest...")
     sent = 0
-    circles = await db.circles.find().to_list(1000)
-    for c in circles:
-        members = await db.users.find({"_id": {"$in": c["member_ids"]}}).to_list(1000)
+    circles_ref = db.collection("circles")
+    async for cdoc in circles_ref.stream():
+        c = cdoc.to_dict()
+        c["_id"] = cdoc.id
+        member_ids = c.get("member_ids", [])
+        members = []
+        for mid in member_ids:
+            mu = await get_user_doc(mid)
+            if mu:
+                members.append(mu)
         top5 = sorted(members, key=lambda u: u.get("xp", 0), reverse=True)[:5]
         survivors = [u for u in members if u.get("streak", 0) >= 7]
         leaderboard_html = "".join(
@@ -488,15 +470,11 @@ async def run_weekly_digest():
             f"<h3>Streak survivors (7+ days)</h3><p>{survivors_html}</p>"
         )
         for u in members:
-            await db.notifications.insert_one({
-                "_id": str(uuid.uuid4()),
-                "user_id": u["_id"],
-                "type": "weekly_digest",
+            await create_doc("notifications", {
+                "user_id": u["_id"], "type": "weekly_digest",
                 "title": f"Weekly digest — {c['name']}",
                 "body": f"Top: {top5[0]['name'] if top5 else 'n/a'} • Streaks: {len(survivors)} survivors",
-                "meta": {"circle_id": c["_id"]},
-                "read": False,
-                "created_at": now_iso(),
+                "meta": {"circle_id": c["_id"]}, "read": False, "created_at": now_iso(),
             })
             await send_email(u["email"], f"Gylfa weekly digest — {c['name']}", body)
             sent += 1
@@ -505,7 +483,6 @@ async def run_weekly_digest():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global scheduler
-    await ensure_indexes()
     await seed_data()
     if DIGEST_ENABLED:
         scheduler = AsyncIOScheduler(timezone="UTC")
@@ -515,166 +492,173 @@ async def lifespan(app: FastAPI):
     yield
     if scheduler:
         scheduler.shutdown(wait=False)
-    client.close()
 
 app = FastAPI(lifespan=lifespan, title="Gylfa API")
 
-# ---------- Routes: Auth ----------
-@api.post("/auth/register")
-async def register(payload: RegisterReq, response: Response):
-    email = payload.email.lower()
-    if await db.users.find_one({"email": email}):
-        raise HTTPException(status_code=400, detail="Email already registered")
-    uid = str(uuid.uuid4())
-    initials = "".join([p[0] for p in payload.name.split()[:2]]).upper() or "U"
-    user = {
-        "_id": uid,
-        "email": email,
-        "name": payload.name,
-        "password_hash": hash_password(payload.password),
-        "avatar": initials,
-        "xp": 0,
-        "level": 1,
-        "streak": 0,
-        "longest_streak": 0,
-        "title": "Initiate",
-        "circles": [],
-        "achievements": [],
-        "last_checkin_date": None,
-        "total_checkins": 0,
-        "auth_provider": "password",
-        "role": "user",
-        "created_at": now_iso(),
-    }
-    await db.users.insert_one(user)
-    token = create_jwt(uid, email)
-    set_auth_cookie(response, token)
-    return {"token": token, "user": safe_user(user)}
+# ---------- Routes: Auth (Firebase-backed) ----------
 
-@api.post("/auth/login")
-async def login(payload: LoginReq, response: Response):
-    email = payload.email.lower()
-    user = await db.users.find_one({"email": email})
-    if not user or not verify_password(payload.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    token = create_jwt(user["_id"], email)
-    set_auth_cookie(response, token)
-    return {"token": token, "user": safe_user(user)}
+@api.post("/auth/profile")
+async def upsert_profile(payload: ProfileUpsertReq, request: Request):
+    """
+    Called by the frontend after Firebase sign-up/login.
+    Creates or updates the user's Firestore profile document using their Firebase UID.
+    Returns the user profile.
+    """
+    token = request.cookies.get("access_token")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        decoded = fb_auth.verify_id_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-@api.post("/auth/logout")
-async def logout(response: Response, user: dict = Depends(get_current_user)):
-    clear_auth_cookie(response)
-    return {"ok": True}
+    uid = decoded["uid"]
+    email = decoded.get("email", "")
+    name = payload.name or decoded.get("name", email.split("@")[0])
+    initials = "".join([p[0] for p in name.split()[:2]]).upper() or "U"
+
+    existing = await get_user_doc(uid)
+    if not existing:
+        profile = {
+            "email": email,
+            "name": name,
+            "avatar": initials,
+            "xp": 0, "level": 1, "streak": 0, "longest_streak": 0,
+            "title": "Initiate", "circles": [], "achievements": [],
+            "last_checkin_date": None, "total_checkins": 0,
+            "auth_provider": decoded.get("firebase", {}).get("sign_in_provider", "password"),
+            "role": "user",
+            "created_at": now_iso(),
+        }
+        await set_user_doc(uid, profile)
+        profile["_id"] = uid
+        return safe_user(profile)
+    else:
+        return safe_user(existing)
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return safe_user(user)
 
-
+@api.post("/auth/logout")
+async def logout(response: Response, user: dict = Depends(get_current_user)):
+    # Firebase sessions are managed client-side; server just acknowledges
+    response.delete_cookie("access_token", path="/")
+    return {"ok": True}
 
 @api.post("/auth/forgot-password")
 async def forgot_password(payload: ForgotPasswordReq):
+    """Custom forgot-password flow using Resend email + Firestore token store."""
     email = payload.email.lower()
-    user = await db.users.find_one({"email": email})
-    # Always return success to avoid user enumeration
-    if user:
-        token = secrets.token_urlsafe(32)
-        expires = datetime.now(timezone.utc) + timedelta(hours=1)
-        await db.password_reset_tokens.insert_one({
-            "_id": str(uuid.uuid4()),
-            "token": token,
-            "user_id": user["_id"],
-            "used": False,
-            "expires_at": expires,
-            "created_at": now_iso(),
-        })
-        reset_link = f"{FRONTEND_URL}/reset-password?token={token}"
-        html = (
-            f"<p>Hi {user['name']},</p>"
-            f"<p>Reset your Gylfa password using the link below (valid for 1 hour):</p>"
-            f'<p><a href="{reset_link}">{reset_link}</a></p>'
-        )
-        await send_email(email, "Gylfa — reset your password", html)
+    try:
+        fb_user = await asyncio.to_thread(fb_auth.get_user_by_email, email)
+    except fb_auth.UserNotFoundError:
+        # Don't reveal whether user exists
+        return {"ok": True}
+
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(hours=1)
+    await create_doc("password_reset_tokens", {
+        "token": token,
+        "user_id": fb_user.uid,
+        "email": email,
+        "used": False,
+        "expires_at": expires.isoformat(),
+        "created_at": now_iso(),
+    })
+    reset_link = f"{FRONTEND_URL}/reset-password?token={token}"
+    html = (
+        f"<p>Hi {fb_user.display_name or email},</p>"
+        f"<p>Reset your Gylfa password using the link below (valid for 1 hour):</p>"
+        f'<p><a href="{reset_link}">{reset_link}</a></p>'
+    )
+    await send_email(email, "Gylfa — reset your password", html)
     return {"ok": True}
 
 @api.post("/auth/reset-password")
 async def reset_password(payload: ResetPasswordReq):
-    rec = await db.password_reset_tokens.find_one({"token": payload.token})
+    """Validate reset token and update password via Firebase Admin SDK."""
+    rec = await find_one("password_reset_tokens", "token", payload.token)
     if not rec or rec.get("used"):
         raise HTTPException(status_code=400, detail="Invalid or used token")
-    exp = rec["expires_at"]
-    if isinstance(exp, str):
-        exp = datetime.fromisoformat(exp)
+    exp_str = rec["expires_at"]
+    exp = datetime.fromisoformat(exp_str)
     if exp.tzinfo is None:
         exp = exp.replace(tzinfo=timezone.utc)
     if exp < datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Token expired")
-    await db.users.update_one({"_id": rec["user_id"]}, {"$set": {"password_hash": hash_password(payload.password)}})
-    await db.password_reset_tokens.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
+    await asyncio.to_thread(fb_auth.update_user, rec["user_id"], password=payload.password)
+    await update_doc("password_reset_tokens", rec["_id"], {"used": True})
     return {"ok": True}
 
 # ---------- Routes: Goals ----------
 @api.get("/goals")
 async def list_goals(user: dict = Depends(get_current_user)):
-    goals = await db.goals.find({"user_id": user["_id"]}).to_list(500)
+    goals = await find_many("goals", "user_id", user["_id"])
     for g in goals:
         g["id"] = g.pop("_id")
     return goals
 
 @api.post("/goals")
 async def create_goal(payload: GoalCreate, user: dict = Depends(get_current_user)):
+    goal_id = str(uuid.uuid4())
     goal = {
-        "_id": str(uuid.uuid4()),
         "user_id": user["_id"],
-        "title": payload.title,
-        "description": payload.description,
-        "frequency": payload.frequency,
-        "xp_reward": payload.xp_reward,
-        "icon": payload.icon,
-        "total_completions": 0,
-        "last_completed_date": None,
-        "created_at": now_iso(),
+        "title": payload.title, "description": payload.description,
+        "frequency": payload.frequency, "xp_reward": payload.xp_reward, "icon": payload.icon,
+        "total_completions": 0, "last_completed_date": None, "created_at": now_iso(),
     }
-    await db.goals.insert_one(goal)
-    goal["id"] = goal.pop("_id")
+    await create_doc("goals", goal, doc_id=goal_id)
+    goal["id"] = goal_id
     return goal
 
 @api.patch("/goals/{goal_id}")
 async def update_goal(goal_id: str, payload: GoalUpdate, user: dict = Depends(get_current_user)):
-    goal = await db.goals.find_one({"_id": goal_id, "user_id": user["_id"]})
-    if not goal:
+    doc = await db.collection("goals").document(goal_id).get()
+    if not doc.exists or doc.to_dict().get("user_id") != user["_id"]:
         raise HTTPException(status_code=404, detail="Goal not found")
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     if updates:
-        await db.goals.update_one({"_id": goal_id}, {"$set": updates})
-    updated = await db.goals.find_one({"_id": goal_id})
-    updated["id"] = updated.pop("_id")
+        await update_doc("goals", goal_id, updates)
+    updated = (await db.collection("goals").document(goal_id).get()).to_dict()
+    updated["id"] = goal_id
     return updated
 
 @api.delete("/goals/{goal_id}")
 async def delete_goal(goal_id: str, user: dict = Depends(get_current_user)):
-    res = await db.goals.delete_one({"_id": goal_id, "user_id": user["_id"]})
-    if res.deleted_count == 0:
+    doc = await db.collection("goals").document(goal_id).get()
+    if not doc.exists or doc.to_dict().get("user_id") != user["_id"]:
         raise HTTPException(status_code=404, detail="Goal not found")
+    await delete_doc("goals", goal_id)
     return {"ok": True}
 
 # ---------- Routes: Checkins ----------
 @api.get("/checkins")
 async def list_checkins(user: dict = Depends(get_current_user), days: int = 30):
     cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
-    checkins = await db.checkins.find({"user_id": user["_id"], "date": {"$gte": cutoff}}).sort("created_at", -1).to_list(500)
-    for c in checkins:
-        c["id"] = c.pop("_id")
-    return checkins
+    q = db.collection("checkins").where("user_id", "==", user["_id"]).where("date", ">=", cutoff).order_by("date", direction=firestore.Query.DESCENDING).limit(500)
+    results = []
+    async for doc in q.stream():
+        r = doc.to_dict()
+        r["id"] = doc.id
+        results.append(r)
+    return results
 
 @api.post("/checkins")
 async def create_checkin(payload: CheckinCreate, user: dict = Depends(get_current_user)):
-    goal = await db.goals.find_one({"_id": payload.goal_id, "user_id": user["_id"]})
-    if not goal:
+    goal_doc = await db.collection("goals").document(payload.goal_id).get()
+    if not goal_doc.exists or goal_doc.to_dict().get("user_id") != user["_id"]:
         raise HTTPException(status_code=404, detail="Goal not found")
+    goal = goal_doc.to_dict()
     today = today_iso()
-    existing = await db.checkins.find_one({"user_id": user["_id"], "goal_id": payload.goal_id, "date": today})
-    if existing:
+
+    # Check for existing checkin today
+    existing_q = db.collection("checkins").where("user_id", "==", user["_id"]).where("goal_id", "==", payload.goal_id).where("date", "==", today).limit(1)
+    async for _ in existing_q.stream():
         raise HTTPException(status_code=400, detail="Already checked in for this goal today")
 
     xp_earned = goal["xp_reward"]
@@ -683,114 +667,87 @@ async def create_checkin(payload: CheckinCreate, user: dict = Depends(get_curren
     new_level = level_for_xp(new_xp)
     new_title = title_for_level(new_level)
 
-    # streak
+    # Streak calculation
     last = user.get("last_checkin_date")
     streak = user.get("streak", 0)
     yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
     if last == today:
-        pass  # already today, keep streak
+        pass
     elif last == yesterday:
         streak += 1
     else:
         streak = 1
     longest = max(user.get("longest_streak", 0), streak)
-
     total_checkins = user.get("total_checkins", 0) + 1
+
     updated_user_fields = {
-        "xp": new_xp,
-        "level": new_level,
-        "title": new_title,
-        "streak": streak,
-        "longest_streak": longest,
-        "last_checkin_date": today,
-        "total_checkins": total_checkins,
+        "xp": new_xp, "level": new_level, "title": new_title,
+        "streak": streak, "longest_streak": longest,
+        "last_checkin_date": today, "total_checkins": total_checkins,
     }
-    # achievements
+
+    # Achievement check
     test_user = {**user, **updated_user_fields}
     newly = check_achievements(test_user)
     if newly:
         updated_user_fields["achievements"] = list(set(user.get("achievements", []) + newly))
 
-    await db.users.update_one({"_id": user["_id"]}, {"$set": updated_user_fields})
-    await db.goals.update_one(
-        {"_id": payload.goal_id},
-        {"$set": {"last_completed_date": today}, "$inc": {"total_completions": 1}},
-    )
-    checkin_doc = {
-        "_id": str(uuid.uuid4()),
-        "user_id": user["_id"],
-        "goal_id": payload.goal_id,
-        "goal_title": goal["title"],
-        "xp_earned": xp_earned,
-        "date": today,
-        "note": payload.note,
-        "created_at": now_iso(),
-    }
-    await db.checkins.insert_one(checkin_doc)
+    await update_doc("users", user["_id"], updated_user_fields)
+    await update_doc("goals", payload.goal_id, {
+        "last_completed_date": today,
+        "total_completions": firestore.Increment(1),
+    })
 
-    # activities to circles
+    checkin_id = str(uuid.uuid4())
+    checkin_doc = {
+        "user_id": user["_id"], "goal_id": payload.goal_id,
+        "goal_title": goal["title"], "xp_earned": xp_earned,
+        "date": today, "note": payload.note, "created_at": now_iso(),
+    }
+    await create_doc("checkins", checkin_doc, doc_id=checkin_id)
+
+    # Activities for circles
     for cid in user.get("circles", []):
-        await db.activities.insert_one({
-            "_id": str(uuid.uuid4()),
-            "circle_id": cid,
-            "user_id": user["_id"],
-            "user_name": user["name"],
-            "type": "checkin",
-            "message": f"completed {goal['title']} (+{xp_earned} XP)",
+        await create_doc("activities", {
+            "circle_id": cid, "user_id": user["_id"], "user_name": user["name"],
+            "type": "checkin", "message": f"completed {goal['title']} (+{xp_earned} XP)",
             "created_at": now_iso(),
         })
 
     notifications_created = []
     if new_level > prev_level:
-        notif = {
-            "_id": str(uuid.uuid4()),
-            "user_id": user["_id"],
-            "type": "level_up",
+        await create_doc("notifications", {
+            "user_id": user["_id"], "type": "level_up",
             "title": f"Level up — Lv.{new_level} {new_title}",
             "body": f"You reached Level {new_level}. Title: {new_title}.",
             "meta": {"level": new_level, "title": new_title},
-            "read": False,
-            "created_at": now_iso(),
-        }
-        await db.notifications.insert_one(notif)
+            "read": False, "created_at": now_iso(),
+        })
         notifications_created.append("level_up")
         for cid in user.get("circles", []):
-            await db.activities.insert_one({
-                "_id": str(uuid.uuid4()),
-                "circle_id": cid,
-                "user_id": user["_id"],
-                "user_name": user["name"],
-                "type": "level_up",
-                "message": f"reached Level {new_level} ({new_title})",
+            await create_doc("activities", {
+                "circle_id": cid, "user_id": user["_id"], "user_name": user["name"],
+                "type": "level_up", "message": f"reached Level {new_level} ({new_title})",
                 "created_at": now_iso(),
             })
 
     if streak in STREAK_MILESTONES and streak != user.get("streak", 0):
-        notif = {
-            "_id": str(uuid.uuid4()),
-            "user_id": user["_id"],
-            "type": "streak_milestone",
+        await create_doc("notifications", {
+            "user_id": user["_id"], "type": "streak_milestone",
             "title": f"{streak}-day streak",
             "body": f"You hit a {streak}-day streak. Keep going.",
-            "meta": {"streak": streak},
-            "read": False,
-            "created_at": now_iso(),
-        }
-        await db.notifications.insert_one(notif)
+            "meta": {"streak": streak}, "read": False, "created_at": now_iso(),
+        })
         notifications_created.append("streak_milestone")
         for cid in user.get("circles", []):
-            await db.activities.insert_one({
-                "_id": str(uuid.uuid4()),
-                "circle_id": cid,
-                "user_id": user["_id"],
-                "user_name": user["name"],
-                "type": "streak",
-                "message": f"hit a {streak}-day streak",
+            await create_doc("activities", {
+                "circle_id": cid, "user_id": user["_id"], "user_name": user["name"],
+                "type": "streak", "message": f"hit a {streak}-day streak",
                 "created_at": now_iso(),
             })
 
-    checkin_doc["id"] = checkin_doc.pop("_id")
-    updated_user = await db.users.find_one({"_id": user["_id"]})
+    checkin_doc["id"] = checkin_id
+    updated_user = await get_user_doc(user["_id"])
     return {
         "checkin": checkin_doc,
         "user": safe_user(updated_user),
@@ -810,126 +767,129 @@ def role_for(c: dict, user_id: str) -> str:
 
 async def serialize_circle(c: dict) -> dict:
     admin_ids = c.get("admin_ids", [])
-    members = await db.users.find({"_id": {"$in": c["member_ids"]}}).to_list(500)
+    members = []
+    for mid in c.get("member_ids", []):
+        mu = await get_user_doc(mid)
+        if mu:
+            members.append(mu)
     member_list = [
         {
-            "id": m["_id"],
-            "name": m["name"],
-            "avatar": m.get("avatar"),
-            "xp": m.get("xp", 0),
-            "level": m.get("level", 1),
-            "title": m.get("title", "Initiate"),
-            "streak": m.get("streak", 0),
+            "id": m["_id"], "name": m["name"], "avatar": m.get("avatar"),
+            "xp": m.get("xp", 0), "level": m.get("level", 1),
+            "title": m.get("title", "Initiate"), "streak": m.get("streak", 0),
             "role": role_for(c, m["_id"]),
         }
         for m in members
     ]
     return {
-        "id": c["_id"],
-        "name": c["name"],
-        "description": c.get("description", ""),
-        "emoji": c.get("emoji", "⚔️"),
-        "invite_code": c["invite_code"],
-        "owner_id": c["owner_id"],
-        "admin_ids": admin_ids,
-        "member_ids": c["member_ids"],
-        "members": member_list,
+        "id": c["_id"], "name": c["name"], "description": c.get("description", ""),
+        "emoji": c.get("emoji", "⚔️"), "invite_code": c["invite_code"],
+        "owner_id": c["owner_id"], "admin_ids": admin_ids,
+        "member_ids": c.get("member_ids", []), "members": member_list,
         "created_at": c.get("created_at"),
     }
 
 @api.get("/circles")
 async def list_circles(user: dict = Depends(get_current_user)):
-    circles = await db.circles.find({"member_ids": user["_id"]}).to_list(100)
-    return [await serialize_circle(c) for c in circles]
+    q = db.collection("circles").where("member_ids", "array_contains", user["_id"]).limit(100)
+    results = []
+    async for doc in q.stream():
+        c = doc.to_dict()
+        c["_id"] = doc.id
+        results.append(await serialize_circle(c))
+    return results
 
 @api.post("/circles")
 async def create_circle(payload: CircleCreate, user: dict = Depends(get_current_user)):
     code = gen_invite_code()
-    while await db.circles.find_one({"invite_code": code}):
+    while await find_one("circles", "invite_code", code):
         code = gen_invite_code()
     cid = str(uuid.uuid4())
     circle = {
-        "_id": cid,
-        "name": payload.name,
-        "description": payload.description,
-        "emoji": payload.emoji,
-        "invite_code": code,
-        "owner_id": user["_id"],
-        "admin_ids": [],
-        "member_ids": [user["_id"]],
-        "created_at": now_iso(),
+        "name": payload.name, "description": payload.description, "emoji": payload.emoji,
+        "invite_code": code, "owner_id": user["_id"], "admin_ids": [],
+        "member_ids": [user["_id"]], "created_at": now_iso(),
     }
-    await db.circles.insert_one(circle)
-    await db.users.update_one({"_id": user["_id"]}, {"$addToSet": {"circles": cid}})
-    # achievement check
-    refreshed = await db.users.find_one({"_id": user["_id"]})
+    await create_doc("circles", circle, doc_id=cid)
+    await update_doc("users", user["_id"], {"circles": firestore.ArrayUnion([cid])})
+    refreshed = await get_user_doc(user["_id"])
     newly = check_achievements(refreshed)
     if newly:
-        await db.users.update_one({"_id": user["_id"]}, {"$set": {"achievements": list(set(refreshed.get("achievements", []) + newly))}})
+        await update_doc("users", user["_id"], {"achievements": list(set(refreshed.get("achievements", []) + newly))})
+    circle["_id"] = cid
     return await serialize_circle(circle)
 
 @api.post("/circles/join")
 async def join_circle(payload: CircleJoinReq, user: dict = Depends(get_current_user)):
     code = payload.invite_code.strip().upper()
-    circle = await db.circles.find_one({"invite_code": code})
+    circle = await find_one("circles", "invite_code", code)
     if not circle:
         raise HTTPException(status_code=404, detail="Invalid invite code")
-    if user["_id"] in circle["member_ids"]:
+    if user["_id"] in circle.get("member_ids", []):
         return await serialize_circle(circle)
-    await db.circles.update_one({"_id": circle["_id"]}, {"$addToSet": {"member_ids": user["_id"]}})
-    await db.users.update_one({"_id": user["_id"]}, {"$addToSet": {"circles": circle["_id"]}})
-    await db.activities.insert_one({
-        "_id": str(uuid.uuid4()),
-        "circle_id": circle["_id"],
-        "user_id": user["_id"],
-        "user_name": user["name"],
-        "type": "join",
-        "message": "joined the circle",
-        "created_at": now_iso(),
+    await update_doc("circles", circle["_id"], {"member_ids": firestore.ArrayUnion([user["_id"]])})
+    await update_doc("users", user["_id"], {"circles": firestore.ArrayUnion([circle["_id"]])})
+    await create_doc("activities", {
+        "circle_id": circle["_id"], "user_id": user["_id"], "user_name": user["name"],
+        "type": "join", "message": "joined the circle", "created_at": now_iso(),
     })
-    refreshed = await db.users.find_one({"_id": user["_id"]})
+    refreshed = await get_user_doc(user["_id"])
     newly = check_achievements(refreshed)
     if newly:
-        await db.users.update_one({"_id": user["_id"]}, {"$set": {"achievements": list(set(refreshed.get("achievements", []) + newly))}})
-    circle = await db.circles.find_one({"_id": circle["_id"]})
-    return await serialize_circle(circle)
+        await update_doc("users", user["_id"], {"achievements": list(set(refreshed.get("achievements", []) + newly))})
+    updated_circle = (await db.collection("circles").document(circle["_id"]).get()).to_dict()
+    updated_circle["_id"] = circle["_id"]
+    return await serialize_circle(updated_circle)
 
 @api.get("/circles/{circle_id}")
 async def get_circle(circle_id: str, period: str = "all", user: dict = Depends(get_current_user)):
-    circle = await db.circles.find_one({"_id": circle_id})
-    if not circle:
+    doc = await db.collection("circles").document(circle_id).get()
+    if not doc.exists:
         raise HTTPException(status_code=404, detail="Circle not found")
-    if user["_id"] not in circle["member_ids"]:
+    circle = doc.to_dict()
+    circle["_id"] = circle_id
+    if user["_id"] not in circle.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a member")
     payload = await serialize_circle(circle)
-    activities = await db.activities.find({"circle_id": circle_id}).sort("created_at", -1).to_list(50)
-    for a in activities:
-        a["id"] = a.pop("_id")
+
+    acts_q = db.collection("activities").where("circle_id", "==", circle_id).order_by("created_at", direction=firestore.Query.DESCENDING).limit(50)
+    activities = []
+    async for adoc in acts_q.stream():
+        a = adoc.to_dict()
+        a["id"] = adoc.id
+        activities.append(a)
     payload["activities"] = activities
-    # 4-stat grid
+
     member_xp = sum(m["xp"] for m in payload["members"])
-    member_checkins = await db.checkins.count_documents({"user_id": {"$in": circle["member_ids"]}})
+    member_checkins = await count_docs("checkins", "circle_id", circle_id)
+    # Approximate: count checkins per member
+    mc = 0
+    for mid in circle.get("member_ids", []):
+        mc += await count_docs("checkins", "user_id", mid)
     avg_streak = round(sum(m["streak"] for m in payload["members"]) / max(len(payload["members"]), 1), 1)
     payload["stats"] = {
         "members": len(payload["members"]),
         "total_xp": member_xp,
-        "total_checkins": member_checkins,
+        "total_checkins": mc,
         "avg_streak": avg_streak,
     }
-    # Leaderboard with time filter
+
     period = (period or "all").lower()
     if period in ("week", "month"):
-        days = 7 if period == "week" else 30
-        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
-        pipeline = [
-            {"$match": {"user_id": {"$in": circle["member_ids"]}, "date": {"$gte": cutoff}}},
-            {"$group": {"_id": "$user_id", "period_xp": {"$sum": "$xp_earned"}, "checkins": {"$sum": 1}}},
-        ]
-        agg = {doc["_id"]: doc async for doc in db.checkins.aggregate(pipeline)}
-        board = []
-        for m in payload["members"]:
-            stats = agg.get(m["id"], {})
-            board.append({**m, "period_xp": stats.get("period_xp", 0), "period_checkins": stats.get("checkins", 0)})
+        days_back = 7 if period == "week" else 30
+        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days_back)).isoformat()
+        # Aggregate period XP per member
+        period_stats: dict = {}
+        for mid in circle.get("member_ids", []):
+            pq = db.collection("checkins").where("user_id", "==", mid).where("date", ">=", cutoff)
+            period_xp = 0
+            period_checkins = 0
+            async for pdoc in pq.stream():
+                pd_data = pdoc.to_dict()
+                period_xp += pd_data.get("xp_earned", 0)
+                period_checkins += 1
+            period_stats[mid] = {"period_xp": period_xp, "period_checkins": period_checkins}
+        board = [{**m, **period_stats.get(m["id"], {"period_xp": 0, "period_checkins": 0})} for m in payload["members"]]
         board.sort(key=lambda x: x["period_xp"], reverse=True)
         payload["leaderboard"] = board
     else:
@@ -940,9 +900,11 @@ async def get_circle(circle_id: str, period: str = "all", user: dict = Depends(g
 
 # ---------- Circle moderation ----------
 async def _require_circle_role(circle_id: str, user_id: str, allowed: List[str]) -> dict:
-    circle = await db.circles.find_one({"_id": circle_id})
-    if not circle:
+    doc = await db.collection("circles").document(circle_id).get()
+    if not doc.exists:
         raise HTTPException(status_code=404, detail="Circle not found")
+    circle = doc.to_dict()
+    circle["_id"] = circle_id
     role = role_for(circle, user_id)
     if role not in allowed:
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -951,18 +913,22 @@ async def _require_circle_role(circle_id: str, user_id: str, allowed: List[str])
 @api.post("/circles/{circle_id}/members/{member_id}/promote")
 async def promote_member(circle_id: str, member_id: str, user: dict = Depends(get_current_user)):
     circle = await _require_circle_role(circle_id, user["_id"], ["owner"])
-    if member_id not in circle["member_ids"]:
+    if member_id not in circle.get("member_ids", []):
         raise HTTPException(status_code=404, detail="Not a member")
     if member_id == circle["owner_id"]:
         raise HTTPException(status_code=400, detail="Owner cannot be promoted")
-    await db.circles.update_one({"_id": circle_id}, {"$addToSet": {"admin_ids": member_id}})
-    return await serialize_circle(await db.circles.find_one({"_id": circle_id}))
+    await update_doc("circles", circle_id, {"admin_ids": firestore.ArrayUnion([member_id])})
+    updated = (await db.collection("circles").document(circle_id).get()).to_dict()
+    updated["_id"] = circle_id
+    return await serialize_circle(updated)
 
 @api.post("/circles/{circle_id}/members/{member_id}/demote")
 async def demote_member(circle_id: str, member_id: str, user: dict = Depends(get_current_user)):
-    circle = await _require_circle_role(circle_id, user["_id"], ["owner"])
-    await db.circles.update_one({"_id": circle_id}, {"$pull": {"admin_ids": member_id}})
-    return await serialize_circle(await db.circles.find_one({"_id": circle_id}))
+    await _require_circle_role(circle_id, user["_id"], ["owner"])
+    await update_doc("circles", circle_id, {"admin_ids": firestore.ArrayRemove([member_id])})
+    updated = (await db.collection("circles").document(circle_id).get()).to_dict()
+    updated["_id"] = circle_id
+    return await serialize_circle(updated)
 
 @api.delete("/circles/{circle_id}/members/{member_id}")
 async def remove_member(circle_id: str, member_id: str, user: dict = Depends(get_current_user)):
@@ -971,23 +937,21 @@ async def remove_member(circle_id: str, member_id: str, user: dict = Depends(get
         raise HTTPException(status_code=400, detail="Cannot remove the owner")
     if role_for(circle, member_id) == "admin" and role_for(circle, user["_id"]) != "owner":
         raise HTTPException(status_code=403, detail="Only the owner can remove an admin")
-    await db.circles.update_one(
-        {"_id": circle_id},
-        {"$pull": {"member_ids": member_id, "admin_ids": member_id}},
-    )
-    await db.users.update_one({"_id": member_id}, {"$pull": {"circles": circle_id}})
-    target = await db.users.find_one({"_id": member_id})
+    await update_doc("circles", circle_id, {
+        "member_ids": firestore.ArrayRemove([member_id]),
+        "admin_ids": firestore.ArrayRemove([member_id]),
+    })
+    await update_doc("users", member_id, {"circles": firestore.ArrayRemove([circle_id])})
+    target = await get_user_doc(member_id)
     if target:
-        await db.activities.insert_one({
-            "_id": str(uuid.uuid4()),
-            "circle_id": circle_id,
-            "user_id": user["_id"],
-            "user_name": user["name"],
-            "type": "remove",
-            "message": f"removed {target['name']} from the circle",
+        await create_doc("activities", {
+            "circle_id": circle_id, "user_id": user["_id"], "user_name": user["name"],
+            "type": "remove", "message": f"removed {target['name']} from the circle",
             "created_at": now_iso(),
         })
-    return await serialize_circle(await db.circles.find_one({"_id": circle_id}))
+    updated = (await db.collection("circles").document(circle_id).get()).to_dict()
+    updated["_id"] = circle_id
+    return await serialize_circle(updated)
 
 @api.post("/circles/{circle_id}/invite")
 async def invite_members(circle_id: str, payload: CircleInviteReq, user: dict = Depends(get_current_user)):
@@ -1008,33 +972,29 @@ async def invite_members(circle_id: str, payload: CircleInviteReq, user: dict = 
 # ---------- Public profile ----------
 @api.get("/users/{user_id}/public")
 async def public_profile(user_id: str):
-    u = await db.users.find_one({"_id": user_id})
+    u = await get_user_doc(user_id)
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
     earned = set(u.get("achievements", []))
     achievements = [{**a, "unlocked": a["id"] in earned} for a in ACHIEVEMENT_DEFS if a["id"] in earned]
     cutoff = (datetime.now(timezone.utc).date() - timedelta(days=13)).isoformat()
-    raw = await db.checkins.find({"user_id": user_id, "date": {"$gte": cutoff}}).to_list(500)
+    q = db.collection("checkins").where("user_id", "==", user_id).where("date", ">=", cutoff)
     history = {}
-    for c in raw:
-        history[c["date"]] = history.get(c["date"], 0) + c.get("xp_earned", 0)
+    async for doc in q.stream():
+        cd = doc.to_dict()
+        history[cd["date"]] = history.get(cd["date"], 0) + cd.get("xp_earned", 0)
     series = []
     today_d = datetime.now(timezone.utc).date()
     for i in range(13, -1, -1):
         d = (today_d - timedelta(days=i)).isoformat()
         series.append({"date": d, "xp": history.get(d, 0)})
     return {
-        "id": u["_id"],
-        "name": u["name"],
-        "avatar": u.get("avatar"),
-        "xp": u.get("xp", 0),
-        "level": u.get("level", 1),
-        "title": u.get("title", "Initiate"),
-        "streak": u.get("streak", 0),
+        "id": u["_id"], "name": u["name"], "avatar": u.get("avatar"),
+        "xp": u.get("xp", 0), "level": u.get("level", 1),
+        "title": u.get("title", "Initiate"), "streak": u.get("streak", 0),
         "longest_streak": u.get("longest_streak", 0),
         "total_checkins": u.get("total_checkins", 0),
-        "achievements": achievements,
-        "xp_history": series,
+        "achievements": achievements, "xp_history": series,
         "member_since": u.get("created_at"),
     }
 
@@ -1047,25 +1007,30 @@ async def list_achievements(user: dict = Depends(get_current_user)):
 # ---------- Routes: Notifications ----------
 @api.get("/notifications")
 async def list_notifications(user: dict = Depends(get_current_user)):
-    notifs = await db.notifications.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(100)
-    for n in notifs:
-        n["id"] = n.pop("_id")
+    q = db.collection("notifications").where("user_id", "==", user["_id"]).order_by("created_at", direction=firestore.Query.DESCENDING).limit(100)
+    notifs = []
+    async for doc in q.stream():
+        n = doc.to_dict()
+        n["id"] = doc.id
+        notifs.append(n)
     unread = sum(1 for n in notifs if not n.get("read"))
     return {"items": notifs, "unread": unread}
 
 @api.post("/notifications/mark-all-read")
 async def mark_all_read(user: dict = Depends(get_current_user)):
-    await db.notifications.update_many({"user_id": user["_id"], "read": False}, {"$set": {"read": True}})
+    q = db.collection("notifications").where("user_id", "==", user["_id"]).where("read", "==", False)
+    batch = db.batch()
+    async for doc in q.stream():
+        batch.update(doc.reference, {"read": True})
+    await batch.commit()
     return {"ok": True}
 
 @api.patch("/notifications/{notif_id}/read")
 async def mark_read(notif_id: str, user: dict = Depends(get_current_user)):
-    res = await db.notifications.update_one(
-        {"_id": notif_id, "user_id": user["_id"]},
-        {"$set": {"read": True}},
-    )
-    if res.matched_count == 0:
+    doc = await db.collection("notifications").document(notif_id).get()
+    if not doc.exists or doc.to_dict().get("user_id") != user["_id"]:
         raise HTTPException(status_code=404, detail="Notification not found")
+    await update_doc("notifications", notif_id, {"read": True})
     return {"ok": True}
 
 # ---------- Routes: Admin ----------
@@ -1078,8 +1043,12 @@ async def admin_send_digest(admin: dict = Depends(require_admin)):
 async def root():
     return {"app": "gylfa", "ok": True}
 
-app.include_router(api)
+@api.get("/health")
+async def health():
+    """Liveness probe — used by Render, Docker health checks, and load balancers."""
+    return {"status": "ok"}
 
+# IMPORTANT: Middleware must be added BEFORE include_router.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS if CORS_ORIGINS != ["*"] else ["*"],
@@ -1087,3 +1056,5 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(api)

@@ -1,24 +1,30 @@
 import axios from "axios";
+import { auth } from "@/lib/firebase";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API_BASE = `${BACKEND_URL}/api`;
-
-const TOKEN_KEY = "gylfa_token";
-
-export const getToken = () => localStorage.getItem(TOKEN_KEY);
-export const setToken = (t) => localStorage.setItem(TOKEN_KEY, t);
-export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
 export const api = axios.create({
   baseURL: API_BASE,
   withCredentials: true,
 });
 
-api.interceptors.request.use((config) => {
-  const t = getToken();
-  if (t) {
-    config.headers = config.headers || {};
-    config.headers.Authorization = `Bearer ${t}`;
+/**
+ * Attach a fresh Firebase ID token to every outgoing request.
+ * Firebase automatically refreshes the token if it has expired.
+ */
+api.interceptors.request.use(async (config) => {
+  const currentUser = auth.currentUser;
+  if (currentUser) {
+    try {
+      const token = await currentUser.getIdToken();
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    } catch (err) {
+      // Token fetch failed — request proceeds without auth header;
+      // the backend will return 401 and AuthContext will log the user out.
+      console.warn("[api] Could not retrieve Firebase ID token:", err);
+    }
   }
   return config;
 });

@@ -1,0 +1,28 @@
+# Files/directories excluded from the Docker build context.
+# IMPORTANT: Secrets must never be baked into a Docker image.
+
+# Environment and secrets
+.env
+.env.*
+firebase-service-account.json
+*service-account*.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Development tools
+tests/
+.venv/
+venv/
+
+# Git
+.git/
+.gitignore
+
+# Docs and misc
+*.md

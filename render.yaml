@@ -1,23 +1,28 @@
 services:
   - type: web
     name: gylfa-backend
-    env: docker
+    runtime: python
     rootDir: backend
-    dockerfilePath: ./backend/Dockerfile
     repo: https://github.com/Developer-Sahil/Gylfa
     branch: main
     autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --workers 2 --log-level info
+    # Health check - Render will probe /api/health after each deploy
+    healthCheckPath: /api/health
     envVars:
-      - key: DB_NAME
-        value: gylfa
-      - key: MONGO_URL
-        sync: false
-      - key: JWT_SECRET
-        sync: false
+      # Firebase - project ID is safe to set here; service account key is a Secret File on Render
+      - key: FIREBASE_PROJECT_ID
+        value: cicp-a35c4
+      # Upload firebase-service-account.json as a Render Secret File at /etc/secrets/firebase-service-account.json
+      - key: FIREBASE_SERVICE_ACCOUNT
+        value: /etc/secrets/firebase-service-account.json
+      # URLs - fill in after frontend is deployed
       - key: FRONTEND_URL
         sync: false
       - key: CORS_ORIGINS
         sync: false
+      # Seed accounts - override with strong passwords in the Render dashboard
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD
@@ -26,9 +31,11 @@ services:
         sync: false
       - key: DEMO_PASSWORD
         sync: false
+      # Email
       - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM
-        value: "Gylfa <onboarding@resend.dev>"
+        value: onboarding@resend.dev
+      # Features
       - key: DIGEST_ENABLED
         value: "true"

@@ -2,16 +2,37 @@
 
 Follow these steps to run Gylfa locally or execute tests.
 
-## Local Development Setup
+## Prerequisites
 
-### 1. Prerequisites
 - Python 3.10+
 - Node.js (v18+ recommended) and npm
-- MongoDB instance running locally (or remote Mongo URL)
+- A **Firebase project** with:
+  - **Authentication** → Email/Password sign-in method **enabled**
+  - **Authentication** → Google sign-in method **enabled** (for Google OAuth)
+  - **Firestore Database** created (Start in production mode, pick a region)
 
 ---
 
-### 2. Backend Setup
+## Firebase Project Setup
+
+1. Go to [console.firebase.google.com](https://console.firebase.google.com) and create (or select) a project.
+2. **Enable Authentication providers**:
+   - Authentication → Sign-in method → Email/Password → Enable
+   - Authentication → Sign-in method → Google → Enable (set support email)
+3. **Enable Firestore**:
+   - Firestore Database → Create database → Production mode → choose region
+4. **Generate Service Account key** (for the backend):
+   - Project Settings → Service Accounts → Generate new private key
+   - Save the downloaded JSON as `backend/firebase-service-account.json`
+   - ⚠️ Never commit this file — it's in `.gitignore`
+5. **Register a Web App** (for the frontend):
+   - Project Settings → General → Your apps → Add app → Web (`</>`)
+   - Copy the `firebaseConfig` values for the frontend `.env`
+
+---
+
+## Backend Setup
+
 1. Navigate to the backend directory:
    ```bash
    cd backend
@@ -20,30 +41,31 @@ Follow these steps to run Gylfa locally or execute tests.
    ```bash
    pip install -r requirements.txt
    ```
-3. Create a `.env` file in the `backend/` directory. Example:
+3. Ensure `backend/firebase-service-account.json` is in place (from Firebase setup above).
+4. Edit `backend/.env`:
    ```env
-   MONGO_URL=mongodb://localhost:27017
-   DB_NAME=gylfa
-   JWT_SECRET=supersecretjwtkeygylfa123
+   FIREBASE_SERVICE_ACCOUNT=./firebase-service-account.json
+   FIREBASE_PROJECT_ID=your-firebase-project-id
    FRONTEND_URL=http://localhost:3000
    ADMIN_EMAIL=admin@gylfa.app
    ADMIN_PASSWORD=admin123
    DEMO_EMAIL=demo@gylfa.app
    DEMO_PASSWORD=demo123
-   RESEND_API_KEY=
+   RESEND_API_KEY=          # leave empty to use console mock
    EMAIL_FROM=Gylfa <onboarding@resend.dev>
    DIGEST_ENABLED=true
    CORS_ORIGINS=http://localhost:3000
    ```
-4. Start the backend:
+5. Start the backend:
    ```bash
    uvicorn server:app --reload --host 0.0.0.0 --port 8000
    ```
-   On launch, the backend will auto-seed the admin user, demo user (`Aria Shadow`), default companions, the "Shadow Guild" circle, and seed goals and check-ins.
+   On launch, the backend auto-seeds the admin user, demo user (`Aria Shadow`), default companions, the "Shadow Guild" circle, and seed goals and check-ins into Firestore (idempotent).
 
 ---
 
-### 3. Frontend Setup
+## Frontend Setup
+
 1. Navigate to the frontend directory:
    ```bash
    cd frontend
@@ -52,9 +74,15 @@ Follow these steps to run Gylfa locally or execute tests.
    ```bash
    npm install
    ```
-3. Create a `.env` file in the `frontend/` directory:
+3. Edit `frontend/.env` with your Firebase Web App config:
    ```env
    REACT_APP_BACKEND_URL=http://localhost:8000
+   REACT_APP_FIREBASE_API_KEY=AIzaSy...
+   REACT_APP_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+   REACT_APP_FIREBASE_PROJECT_ID=your-project-id
+   REACT_APP_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
+   REACT_APP_FIREBASE_MESSAGING_SENDER_ID=123456789
+   REACT_APP_FIREBASE_APP_ID=1:123:web:abc
    ```
 4. Start the development server:
    ```bash
@@ -66,15 +94,26 @@ Follow these steps to run Gylfa locally or execute tests.
 ## Running Tests
 
 ### Backend Tests
-Ensure pytest is installed (in backend requirements) and run from the `backend/` directory:
 ```bash
 cd backend
 pytest
 ```
 
 ### Frontend Tests
-Run from the `frontend/` directory:
 ```bash
 cd frontend
 npm test
 ```
+
+---
+
+## Demo Credentials (seeded on startup)
+
+| Role  | Email             | Password    |
+|-------|-------------------|-------------|
+| Admin | admin@gylfa.app   | admin123    |
+| Demo  | demo@gylfa.app    | demo123     |
+
+Companion accounts: `kai@gylfa.app`, `lyra@gylfa.app`, `renji@gylfa.app`, `mira@gylfa.app` — all use password `companion123`.
+
+Circle invite code: `SHADOW01`

@@ -40,6 +40,7 @@
     "date-fns": "4.1.0",
     "dayjs": "1.11.13",
     "embla-carousel-react": "8.6.0",
+    "firebase": "^11.10.0",
     "framer-motion": "11.18.0",
     "input-otp": "1.4.2",
     "lodash": "4.18.1",
@@ -62,7 +63,7 @@
   },
   "scripts": {
     "start": "craco start",
-    "build": "craco build",
+    "build": "GENERATE_SOURCEMAP=false craco build",
     "test": "craco test"
   },
   "browserslist": {

@@ -5,122 +5,138 @@ Gylfa is a social accountability platform structured as a full-stack application
 ## System Architecture Overview
 
 ```
-+----------------------------------------------------------------+
-|                        React Frontend                          |
-|  - App Layout: fixed sidebar, dashboard, circles, goals       |
-|  - Theme: Dark (#050505 bg, #0e0e10 surface, #BAFB00 accent)   |
-|  - Auth contexts & Axios api clients                           |
-+------------------------------------+---------------------------+
++------------------------------------------------------------------+
+|                        React Frontend                            |
+|  - App Layout: fixed sidebar, dashboard, circles, goals          |
+|  - Theme: Dark (#050505 bg, #0e0e10 surface, #BAFB00 accent)     |
+|  - Firebase JS SDK: onAuthStateChanged session management         |
+|  - Axios API client: attaches Firebase ID token per request       |
++------------------------------------+-----------------------------+
                                      |
-                                     | (JSON REST APIs + Cookies/JWT)
+                      (JSON REST API + Firebase ID Token)
                                      v
-+----------------------------------------------------------------+
-|                        FastAPI Backend                         |
-|  - Authentication: JWT in httpOnly cookie + Bearer token       |
-|  - Scheduler: Weekly Digest (APScheduler)                      |
-|  - Seeding: Idempotent user/circle/goals/check-in seeding      |
-+------------------------------------+---------------------------+
++------------------------------------------------------------------+
+|                        FastAPI Backend                           |
+|  - Authentication: firebase-admin verifies ID tokens             |
+|  - Profile: /api/auth/profile upserts Firestore user doc         |
+|  - Scheduler: Weekly Digest (APScheduler)                        |
+|  - Seeding: Idempotent user/circle/goals/check-in seeding        |
++------------------------------------+-----------------------------+
                                      |
-                                     | (Async Motor connection)
-                                     v
-+----------------------------------------------------------------+
-|                           MongoDB                              |
-|  - Collections: users, circles, goals, checkins, activities,   |
-|    notifications, password_reset_tokens                        |
-+----------------------------------------------------------------+
+           +--------------+----------+------------------+
+           |              |                             |
+           v              v                             v
++------------------+ +------------------+  +---------------------------+
+| Firebase Auth    | |   Firestore DB   |  |  Resend (email)           |
+| - Email/Password | | - users          |  |  - Password reset emails  |
+| - Google OAuth   | | - circles        |  |  - Weekly digest emails   |
+|                  | | - goals          |  |  - Console mock in dev    |
+|                  | | - checkins       |  +---------------------------+
+|                  | | - activities     |
+|                  | | - notifications  |
+|                  | | - password_reset_tokens |
++------------------+ +------------------+
 ```
 
-## Database Schema & Collections
+---
 
-MongoDB is utilized via the motor async driver. The primary collections are:
+## Auth Flow
 
-1. **`users`**:
-   - `_id`: String (UUID)
-   - `email`: String (Unique index)
+### Email/Password
+1. User submits credentials on the Login page.
+2. Frontend calls `signInWithEmailAndPassword(auth, email, password)` via Firebase JS SDK.
+3. Firebase returns a signed ID token (JWT) stored locally in IndexedDB — no localStorage management needed.
+4. Frontend calls `POST /api/auth/profile` with the ID token in `Authorization: Bearer <token>`.
+5. Backend calls `firebase_admin.auth.verify_id_token(token)` to authenticate.
+6. Backend upserts a Firestore document in `users/{uid}` with profile data and returns it.
+7. Subsequent API calls attach a fresh token via the axios request interceptor (`auth.currentUser.getIdToken()`).
+
+### Google OAuth
+1. User clicks "Continue with Google" on Login or Signup page.
+2. Frontend calls `signInWithPopup(auth, googleProvider)`.
+3. Firebase handles the OAuth flow and returns a signed ID token.
+4. Frontend calls `POST /api/auth/profile` — backend creates a Firestore profile doc if it doesn't exist.
+
+### Password Reset (custom Resend flow)
+1. `POST /api/auth/forgot-password` → backend looks up the Firebase user by email, generates a secure token stored in Firestore `password_reset_tokens`.
+2. Resend sends a branded email with the reset link (or logs to console in dev when `RESEND_API_KEY` is empty).
+3. `POST /api/auth/reset-password` → validates the token, calls `firebase_admin.auth.update_user(uid, password=...)`.
+
+### Session Persistence
+- Firebase SDK stores the session in IndexedDB automatically — users stay logged in across page refreshes without any server-side session management.
+- `onAuthStateChanged` in `AuthContext` fires on every mount and auth state change, calling `GET /api/auth/me` to sync the Firestore profile into React state.
+
+---
+
+## Database Schema & Collections (Firestore)
+
+All collections use Firestore (NoSQL document store). Document IDs noted below.
+
+1. **`users/{firebase_uid}`**:
+   - `email`: String
    - `name`: String
-   - `password_hash`: String (bcrypt)
-   - `avatar`: String (Initials or OAuth URL)
-   - `xp`: Integer (Current total XP)
-   - `level`: Integer (Calculated level based on XP)
-   - `streak`: Integer (Current consecutive days checked in)
-   - `longest_streak`: Integer (Personal record streak)
-   - `title`: String (Gamified rank based on level)
-   - `circles`: Array of Strings (Circle IDs user belongs to)
+   - `avatar`: String (Initials or OAuth display photo URL)
+   - `xp`: Integer
+   - `level`: Integer
+   - `streak`: Integer
+   - `longest_streak`: Integer
+   - `title`: String (Gamified rank)
+   - `circles`: Array of Strings (Circle document IDs)
    - `achievements`: Array of Strings (Unlocked achievement IDs)
-   - `last_checkin_date`: String (ISO date `YYYY-MM-DD`)
+   - `last_checkin_date`: String (ISO date `YYYY-MM-DD` or null)
    - `total_checkins`: Integer
-   - `auth_provider`: String (`password` or `google`)
+   - `auth_provider`: String (`password` or `google.com`)
    - `role`: String (`user` or `admin`)
    - `created_at`: String (ISO datetime)
 
-2. **`circles`**:
-   - `_id`: String (UUID)
-   - `name`: String
-   - `description`: String
-   - `emoji`: String
-   - `invite_code`: String (Unique index, e.g. `SHADOW01`)
-   - `owner_id`: String (User ID of the creator)
-   - `admin_ids`: Array of Strings (User IDs of admins)
-   - `member_ids`: Array of Strings (User IDs of members)
+2. **`circles/{uuid}`**:
+   - `name`, `description`, `emoji`: Strings
+   - `invite_code`: String (unique, e.g. `SHADOW01`)
+   - `owner_id`: String (Firebase UID)
+   - `admin_ids`: Array of Strings (Firebase UIDs)
+   - `member_ids`: Array of Strings (Firebase UIDs)
    - `created_at`: String (ISO datetime)
 
-3. **`goals`**:
-   - `_id`: String (UUID)
-   - `user_id`: String (User ID)
-   - `title`: String
-   - `description`: String
+3. **`goals/{uuid}`**:
+   - `user_id`: String (Firebase UID)
+   - `title`, `description`: Strings
    - `frequency`: String (`daily` or `weekly`)
    - `xp_reward`: Integer
    - `icon`: String (Lucide icon name)
    - `total_completions`: Integer
-   - `last_completed_date`: String (ISO date or `null`)
+   - `last_completed_date`: String (ISO date or null)
    - `created_at`: String (ISO datetime)
 
-4. **`checkins`**:
-   - `_id`: String (UUID)
-   - `user_id`: String (User ID)
-   - `goal_id`: String (Goal ID)
+4. **`checkins/{uuid}`**:
+   - `user_id`, `goal_id`: Strings
    - `goal_title`: String
    - `xp_earned`: Integer
    - `date`: String (ISO date `YYYY-MM-DD`)
    - `note`: String
    - `created_at`: String (ISO datetime)
 
-5. **`activities`**:
-   - `_id`: String (UUID)
-   - `circle_id`: String (Circle ID)
-   - `user_id`: String (User ID)
+5. **`activities/{uuid}`**:
+   - `circle_id`, `user_id`: Strings
    - `user_name`: String
    - `type`: String (`checkin`, `level_up`, `streak`, `join`, `remove`)
    - `message`: String
    - `created_at`: String (ISO datetime)
 
-6. **`notifications`**:
-   - `_id`: String (UUID)
-   - `user_id`: String (User ID)
+6. **`notifications/{uuid}`**:
+   - `user_id`: String
    - `type`: String (`level_up`, `streak_milestone`, `weekly_digest`)
-   - `title`: String
-   - `body`: String
-   - `meta`: Object (Details e.g. `{ level, title }`, `{ streak }`)
+   - `title`, `body`: Strings
+   - `meta`: Object
    - `read`: Boolean
    - `created_at`: String (ISO datetime)
 
-7. **`password_reset_tokens`**:
-   - `_id`: String (UUID)
-   - `token`: String (Unique index)
-   - `user_id`: String
+7. **`password_reset_tokens/{uuid}`**:
+   - `token`: String
+   - `user_id`: String (Firebase UID)
+   - `email`: String
    - `used`: Boolean
-   - `expires_at`: Datetime (TTL index)
+   - `expires_at`: String (ISO datetime, 1 hour TTL)
    - `created_at`: String (ISO datetime)
-
----
-
-## Authentication flow
-
-- **Standard (Password) Auth**: Password hashed using `bcrypt` and compared on login. Success responds with a JWT token stored in a cookie (`access_token`) with attributes `HttpOnly`, `Secure`, `SameSite=none`, and also returned in the response body for the frontend to store in `localStorage`.
-- **Header Fallback**: If the cookie is not present, the server checks the `Authorization: Bearer <JWT>` header.
-- **Password Reset**: Generates a secure token stored in `password_reset_tokens` collection with a 1-hour TTL. Sends a reset link via Resend email (or mock console log if `RESEND_API_KEY` is empty).
-- **Google OAuth**: Removed. The application uses email/password authentication only.
 
 ---
 

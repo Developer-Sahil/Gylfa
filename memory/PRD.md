@@ -6,8 +6,8 @@ Build Gylfa: a responsive full-stack social accountability platform. Users creat
 ## Stack
 - Frontend: React (CRA) + Tailwind + shadcn/ui + framer-motion + recharts + lucide-react + sonner toasts
 - Backend: FastAPI (single `server.py`) with lifespan ctx manager + APScheduler
-- DB: MongoDB (motor async)
-- Auth: JWT custom (bcrypt + httpOnly cookies + Bearer fallback) + password reset via email
+- DB: **Cloud Firestore** (google-cloud-firestore async client)
+- Auth: **Firebase Authentication** (Email/Password + Google OAuth) — backend verifies ID tokens via `firebase-admin`; frontend uses `onAuthStateChanged` session management
 - Email: Resend with `[EMAIL-MOCK]` console fallback when `RESEND_API_KEY` is empty
 
 ## Design System
@@ -39,4 +39,6 @@ Build Gylfa: a responsive full-stack social accountability platform. Users creat
 - P2: Email verification + 2FA
 
 ## Env Reference
-backend/.env keys: MONGO_URL, DB_NAME, CORS_ORIGINS, JWT_SECRET, FRONTEND_URL, ADMIN_EMAIL/PASSWORD, DEMO_EMAIL/PASSWORD, RESEND_API_KEY (empty=mock), EMAIL_FROM, DIGEST_ENABLED
+backend/.env keys: `FIREBASE_SERVICE_ACCOUNT` (path to service account JSON), `FIREBASE_PROJECT_ID`, `CORS_ORIGINS`, `FRONTEND_URL`, `ADMIN_EMAIL/PASSWORD`, `DEMO_EMAIL/PASSWORD`, `RESEND_API_KEY` (empty=mock), `EMAIL_FROM`, `DIGEST_ENABLED`
+
+frontend/.env keys: `REACT_APP_BACKEND_URL`, `REACT_APP_FIREBASE_API_KEY`, `REACT_APP_FIREBASE_AUTH_DOMAIN`, `REACT_APP_FIREBASE_PROJECT_ID`, `REACT_APP_FIREBASE_STORAGE_BUCKET`, `REACT_APP_FIREBASE_MESSAGING_SENDER_ID`, `REACT_APP_FIREBASE_APP_ID`
