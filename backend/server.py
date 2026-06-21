@@ -20,6 +20,7 @@ import firebase_admin
 from firebase_admin import credentials, auth as fb_auth
 from google.cloud import firestore
 from google.cloud.firestore_v1.async_client import AsyncClient as AsyncFirestoreClient
+from google.oauth2 import service_account
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,7 +62,23 @@ else:
     )
 
 # ---------- Firestore Async Client ----------
-db: AsyncFirestoreClient = firestore.AsyncClient()
+# Pass credentials explicitly — firestore.AsyncClient() with no args requires
+# Application Default Credentials which are only available on GCP (Cloud Run etc.).
+# On Render / any non-GCP host the service account file must be supplied directly.
+_FIRESTORE_SCOPES = [
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/datastore",
+]
+if _sa_path.exists():
+    _fs_creds = service_account.Credentials.from_service_account_file(
+        str(_sa_path), scopes=_FIRESTORE_SCOPES
+    )
+    db: AsyncFirestoreClient = firestore.AsyncClient(
+        project=FIREBASE_PROJECT_ID or _fs_creds.project_id, credentials=_fs_creds
+    )
+else:
+    # ADC path — works on Cloud Run / GKE where a service account is attached to the instance
+    db: AsyncFirestoreClient = firestore.AsyncClient(project=FIREBASE_PROJECT_ID)
 
 # ---------- Email Helper ----------
 async def send_email(to: str, subject: str, html: str):
