@@ -7,7 +7,7 @@ services:
     branch: main
     autoDeploy: true
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --workers 2 --log-level info
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --log-level info
     # Health check - Render will probe /api/health after each deploy
     healthCheckPath: /api/health
     envVars:

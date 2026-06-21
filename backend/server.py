@@ -483,7 +483,12 @@ async def run_weekly_digest():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global scheduler
-    await seed_data()
+    try:
+        await seed_data()
+    except Exception as e:
+        # Seeding failure must not prevent the app from binding to the port.
+        # The app will still serve requests; seed data can be re-run on the next deploy.
+        logger.error(f"Seed data failed (non-fatal): {e}")
     if DIGEST_ENABLED:
         scheduler = AsyncIOScheduler(timezone="UTC")
         scheduler.add_job(run_weekly_digest, CronTrigger(day_of_week="mon", hour=9, minute=0, timezone="UTC"))
